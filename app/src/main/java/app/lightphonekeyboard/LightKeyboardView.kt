@@ -14,6 +14,7 @@ import android.view.VelocityTracker
 import android.view.View
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.Suggester
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -75,6 +76,9 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** The laid-out a-z key positions, in key units. Re-sent on every relayout. */
         fun onKeyGrid(grid: KeyGrid)
+
+        /** A word tapped in the suggestion strip. */
+        fun onSuggestion(word: String)
     }
 
     var listener: Listener? = null
@@ -143,6 +147,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private var keyLayout = Prefs.LAYOUT_QWERTY
     private var autoPeriod = true
     private var swipeTyping = true
+    private var suggestionsOn = false
     private val hiddenKeys = HashSet<String>()   // control keys removed by their settings toggles
 
     // Voice-dictation listening overlay (drawn instead of keys while the recognizer is active).
@@ -204,6 +209,8 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         appliedHeight = height
         compact = height == Prefs.HEIGHT_SHORT
+        // Read before the metrics below, which size the suggestion strip from it.
+        suggestionsOn = Prefs.suggestions(context)
         when (height) {
             Prefs.HEIGHT_SHORT -> {
                 padTop = dpf(4); padBottom = dpf(5); padSide = dpf(4)
@@ -222,6 +229,11 @@ class LightKeyboardView @JvmOverloads constructor(
             }
         }
         rowPitch = rowKeyH + keyGap * 2
+        // Deliberately small — about half a key. It is a glance target, not a row of buttons, and the
+        // keyboard is a clone of a design that has no suggestion bar at all, so the less of one it adds
+        // the better. Off by default for the same reason.
+        stripTextSize = spf(if (compact) 11 else 12)
+        stripH = if (suggestionsOn) dpf(if (compact) 20 else 24) else 0f
 
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
@@ -242,6 +254,7 @@ class LightKeyboardView @JvmOverloads constructor(
     }
     private val spacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+    private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(60, 255, 255, 255) }
     private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(150, 255, 255, 255)
         style = Paint.Style.STROKE
@@ -273,6 +286,16 @@ class LightKeyboardView @JvmOverloads constructor(
     private val trailY = FloatArray(MAX_TRACE_POINTS)
     /** Width of a letter key (px). The x half of the key-unit conversion; y uses [rowPitch]. */
     private var letterKeyW = 1f
+
+    // --- suggestion strip ---
+    // Three slots above the top row, present only when the setting is on. Kept out of [placed] and
+    // hit-tested separately: the key rects deliberately tile the whole surface with no gaps, and
+    // threading a fourth kind of cell through that would put dead zones between the strip and the keys.
+    private var suggestions: List<String> = emptyList()
+    private var pressedSuggestion = -1
+    /** Height of the strip, or 0 when it isn't shown. Everything below shifts down by this. */
+    private var stripH = 0f
+    private var stripTextSize = 0f
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -310,9 +333,15 @@ class LightKeyboardView @JvmOverloads constructor(
             layer == Layer.EMOJI -> emojiRowCount + 1
             else -> currentRows.size
         }
-        val h = padTop + rowCount * rowPitch + padBottom
+        val h = stripTop + padTop + rowCount * rowPitch + padBottom
         setMeasuredDimension(w, h.toInt())
     }
+
+    /**
+     * Where the key rows start. Zero while dictating: that surface draws over the whole view and has no
+     * word to suggest anything about.
+     */
+    private val stripTop: Float get() = if (listening) 0f else stripH
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         relayout()
@@ -334,11 +363,14 @@ class LightKeyboardView @JvmOverloads constructor(
         val h = height.toFloat()
         val rows = currentRows
         val n = rows.size
+        // The strip sits above everything, so the key bands start below it. The top row's band still
+        // absorbs the top padding, it just no longer reaches y=0 — the strip owns that space.
+        val top = stripTop
         for (i in rows.indices) {
-            // Bands tile [0, h]: the top row absorbs the top pad, the bottom row absorbs the bottom pad.
-            val bandTop = if (i == 0) 0f else padTop + i * rowPitch
-            val bandBottom = if (i == n - 1) h else padTop + (i + 1) * rowPitch
-            val visTop = padTop + i * rowPitch + keyGap
+            // Bands tile [top, h]: the top row absorbs the top pad, the bottom row absorbs the bottom pad.
+            val bandTop = if (i == 0) top else top + padTop + i * rowPitch
+            val bandBottom = if (i == n - 1) h else top + padTop + (i + 1) * rowPitch
+            val visTop = top + padTop + i * rowPitch + keyGap
             val visBottom = visTop + rowKeyH
             layoutRow(rows[i], bandTop, bandBottom, visTop, visBottom, w)
         }
@@ -354,7 +386,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun publishKeyGrid() {
         if (letterKeys.isEmpty()) return
         letterKeyW = letterKeys[0].vis.width().coerceAtLeast(1f)
-        val positions = letterKeys.map { Triple(it.id[0], it.cx / letterKeyW, it.cy / rowPitch) }
+        val positions = letterKeys.map { Triple(it.id[0], it.cx / letterKeyW, (it.cy - stripH) / rowPitch) }
         listener?.onKeyGrid(KeyGrid.of(positions))
     }
 
@@ -391,10 +423,11 @@ class LightKeyboardView @JvmOverloads constructor(
         val h = height.toFloat()
         val drawW = w - padSide * 2
         val rows = Layout.emoji.chunked(emojiCols)
+        val top = stripTop
         for (i in rows.indices) {
-            val bandTop = if (i == 0) 0f else padTop + i * rowPitch
-            val bandBottom = padTop + (i + 1) * rowPitch
-            val visTop = padTop + i * rowPitch + keyGap
+            val bandTop = if (i == 0) top else top + padTop + i * rowPitch
+            val bandBottom = top + padTop + (i + 1) * rowPitch
+            val visTop = top + padTop + i * rowPitch + keyGap
             val visBottom = visTop + rowKeyH
             rows[i].forEachIndexed { j, glyph ->
                 val cellLeft = padSide + drawW * (j.toFloat() / emojiCols)
@@ -411,7 +444,7 @@ class LightKeyboardView @JvmOverloads constructor(
             }
         }
         // Back-to-letters chevron: its own row band (hit spans the full width), drawn as a centered chevron.
-        val backTop = padTop + rows.size * rowPitch
+        val backTop = top + padTop + rows.size * rowPitch
         val boxW = dpf(64)
         val boxH = rowKeyH
         val cx = w / 2f
@@ -437,7 +470,48 @@ class LightKeyboardView @JvmOverloads constructor(
             }
             drawKey(canvas, pk)
         }
+        if (stripH > 0f) drawStrip(canvas)
         if (tracing) drawTrail(canvas)
+    }
+
+    /**
+     * The suggestion strip: up to three words in small type, split by faint vertical rules.
+     *
+     * Empty slots are left blank rather than the strip being hidden, because a strip that appears and
+     * disappears would resize the keyboard under the user's thumb mid-sentence — every key would move
+     * as soon as a word became suggestible. Its height is fixed for as long as the setting is on.
+     */
+    private fun drawStrip(canvas: Canvas) {
+        val slotW = width / Suggester.SLOTS.toFloat()
+        if (pressedSuggestion in 0 until Suggester.SLOTS && suggestionAt(pressedSuggestion) != null) {
+            canvas.drawRect(
+                pressedSuggestion * slotW, 0f, (pressedSuggestion + 1) * slotW, stripH, pressPaint,
+            )
+        }
+        textPaint.textSize = stripTextSize
+        val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+        for (i in 0 until Suggester.SLOTS) {
+            val word = suggestionAt(i) ?: continue
+            val cx = (i + 0.5f) * slotW
+            // Ellipsise rather than overflow into the neighbouring slot.
+            canvas.drawText(fitToWidth(word, slotW - dpf(10)), cx, baseline, textPaint)
+        }
+        // Dividers between occupied slots only, so an empty strip is just empty.
+        for (i in 1 until Suggester.SLOTS) {
+            if (suggestionAt(i - 1) == null && suggestionAt(i) == null) continue
+            val x = i * slotW
+            canvas.drawRect(x - dpf(0.5f), stripH * 0.25f, x + dpf(0.5f), stripH * 0.75f, dividerPaint)
+        }
+    }
+
+    private fun suggestionAt(i: Int): String? = suggestions.getOrNull(i)?.takeIf { it.isNotEmpty() }
+
+    /** [text], truncated with an ellipsis until it fits [maxWidth] at the current [textPaint] size. */
+    private fun fitToWidth(text: String, maxWidth: Float): String {
+        if (textPaint.measureText(text) <= maxWidth) return text
+        var end = text.length
+        while (end > 1 && textPaint.measureText(text.substring(0, end) + "…") > maxWidth) end--
+        return text.substring(0, end) + "…"
     }
 
     /**
@@ -566,6 +640,17 @@ class LightKeyboardView @JvmOverloads constructor(
                 firstPointerId = ev.getPointerId(0)
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().apply { addMovement(ev) }
+                // The strip commits on UP, not on DOWN like the keys do. A key commits on down because
+                // that is what makes fast typing feel immediate and stops letters being dropped when a
+                // finger rolls off; a suggestion is a deliberate, one-off tap where the cost of getting
+                // it wrong is a whole word, so it gets the chance to be cancelled by sliding off.
+                val slot = suggestionSlotAt(ev.x, ev.y)
+                if (slot >= 0) {
+                    pressedSuggestion = slot
+                    firstKeyRetractable = false
+                    invalidate()
+                    return true
+                }
                 firstKeyRetractable = pressDown(firstPointerId, ev.x, ev.y)
             }
 
@@ -580,6 +665,12 @@ class LightKeyboardView @JvmOverloads constructor(
 
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(ev)
+                if (pressedSuggestion >= 0) {
+                    // Slide off the slot and the tap is abandoned, the usual button behaviour.
+                    val still = suggestionSlotAt(ev.x, ev.y)
+                    if (still != pressedSuggestion) { pressedSuggestion = -1; invalidate() }
+                    return true
+                }
                 val idx = ev.findPointerIndex(firstPointerId)
                 if (idx >= 0 && !dismissedThisGesture) {
                     val x = ev.getX(idx)
@@ -624,14 +715,23 @@ class LightKeyboardView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP -> {
+                val slot = pressedSuggestion
+                pressedSuggestion = -1
                 pressed.clear()
                 stopBackspaceRepeat()
                 velocityTracker?.recycle()
                 velocityTracker = null
+                if (slot >= 0) {
+                    val word = suggestionAt(slot)
+                    invalidate()
+                    if (word != null) { tap(); listener?.onSuggestion(word) }
+                    return true
+                }
                 if (tracing) finishTrace() else invalidate()
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                pressedSuggestion = -1
                 pressed.clear()
                 stopBackspaceRepeat()
                 velocityTracker?.recycle()
@@ -718,7 +818,10 @@ class LightKeyboardView @JvmOverloads constructor(
         traceX[traceCount] = x / letterKeyW
         // Same upward parallax correction the tap model applies (fingers register low). One averaged
         // offset rather than the per-row values, since a trace crosses rows by definition.
-        traceY[traceCount] = (y + averageBiasY()) / rowPitch
+        // Measured from the top of the first key row, not the top of the view, so the key-unit
+        // coordinates keep matching the grid published by publishKeyGrid whether the strip is shown
+        // or not — otherwise turning suggestions on would silently shift every gesture down by a row.
+        traceY[traceCount] = (y - stripH + averageBiasY()) / rowPitch
         traceCount++
         invalidate()
     }
@@ -744,6 +847,13 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun abandonTrace() {
         tracing = false
         traceCount = 0
+    }
+
+    /** Which strip slot ([0, SLOTS)) a touch lands in, or -1 if it isn't on the strip at all. */
+    private fun suggestionSlotAt(x: Float, y: Float): Int {
+        if (stripH <= 0f || listening || y >= stripH) return -1
+        val slot = (x / (width / Suggester.SLOTS.toFloat())).toInt()
+        return slot.coerceIn(0, Suggester.SLOTS - 1)
     }
 
     /** Tiled rects always contain the point; the nearest-center fallback only covers off-surface taps. */
@@ -852,7 +962,7 @@ class LightKeyboardView @JvmOverloads constructor(
 
     /** Which letter row a key sits in (0 = top … 2 = bottom), from its centre. */
     private fun rowOf(key: PlacedKey): Int =
-        ((key.cy - padTop) / rowPitch).toInt().coerceIn(0, learnedBiasY.size - 1)
+        ((key.cy - stripH - padTop) / rowPitch).toInt().coerceIn(0, learnedBiasY.size - 1)
 
     /** Passively learn the per-row vertical offset: nudge the resolved key's row toward centring this
      *  tap. Skip taps where the language model overrode a far spatial pick (the intended position is
@@ -953,6 +1063,8 @@ class LightKeyboardView @JvmOverloads constructor(
     fun reset(numeric: Boolean = false) {
         stopBackspaceRepeat()
         abandonTrace()
+        suggestions = emptyList()
+        pressedSuggestion = -1
         saveLearnedOffsets()   // persist what we learned in the field we're leaving
         applyPrefs()
         // Number / phone / date fields open straight on the symbols layer (its top row is 1-0).
@@ -970,6 +1082,15 @@ class LightKeyboardView @JvmOverloads constructor(
         stopBackspaceRepeat()
         saveLearnedOffsets()
         super.onDetachedFromWindow()
+    }
+
+    /** Replace the strip's contents. Fewer than three words leaves the remaining slots blank. */
+    fun setSuggestions(words: List<String>) {
+        if (stripH <= 0f) return
+        if (words == suggestions) return
+        suggestions = words
+        pressedSuggestion = -1
+        invalidate()
     }
 
     /** Enter the voice-dictation listening surface. */
@@ -1019,6 +1140,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private val BACKSPACE_WORD_INTERVAL_MS = 190L   // per-word repeat rate
 
     private fun dpf(v: Int): Float = v * resources.displayMetrics.density
+    private fun dpf(v: Float): Float = v * resources.displayMetrics.density
     private fun spf(v: Int): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics)
 

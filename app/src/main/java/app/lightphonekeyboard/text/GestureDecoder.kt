@@ -40,6 +40,10 @@ class GestureDecoder(
     @Volatile
     var grid: KeyGrid = grid
 
+    /** The user's own words, traced like any other. Scanned as a second, tiny pass. */
+    @Volatile
+    var userWords: UserWords = UserWords.EMPTY
+
     // Resampled input path (location channel) and its centred/scaled copy (shape channel).
     private val ux = FloatArray(SAMPLES)
     private val uy = FloatArray(SAMPLES)
@@ -76,23 +80,38 @@ class GestureDecoder(
         for (i in 0 until SAMPLES) corridor = corridor or g.lettersNear(ux[i], uy[i], CORRIDOR_RADIUS)
 
         val heap = TopK(limit)
-        for (i in dict.lengthRange(MIN_WORD, Corrector.MAX_LENGTH)) {
-            if (!dict.isAlphaOnly(i)) continue                        // can't trace an apostrophe
-            val len = dict.length(i)
-            if (bit(dict.charAt(i, 0)) and startMask == 0) continue
-            if (bit(dict.charAt(i, len - 1)) and endMask == 0) continue
-            if (dict.mask(i) and corridor.inv() != 0) continue        // a letter the path never neared
+        val user = userWords
+        scan(dict, MAIN, g, startMask, endMask, corridor, heap)
+        user.dictionary?.let { scan(it, USER, g, startMask, endMask, corridor, heap) }
+        return heap.words(dict, user)
+    }
 
-            val n = buildTemplate(g, i, len)
+    /** Score every candidate in [source] that survives pruning. Shared by the bundled and user lists. */
+    private fun scan(
+        source: Dictionary,
+        tag: Int,
+        g: KeyGrid,
+        startMask: Int,
+        endMask: Int,
+        corridor: Int,
+        heap: TopK,
+    ) {
+        for (i in source.lengthRange(MIN_WORD, Corrector.MAX_LENGTH)) {
+            if (!source.isAlphaOnly(i)) continue                        // can't trace an apostrophe
+            val len = source.length(i)
+            if (bit(source.charAt(i, 0)) and startMask == 0) continue
+            if (bit(source.charAt(i, len - 1)) and endMask == 0) continue
+            if (source.mask(i) and corridor.inv() != 0) continue        // a letter the path never neared
+
+            val n = buildTemplate(g, source, i, len)
             if (n < 2) continue
             resample(kx, ky, n, tx, ty)
             val location = meanDistance(ux, uy, tx, ty)
-            if (location > LOCATION_CUTOFF) continue                  // nowhere near: reject cheaply
+            if (location > LOCATION_CUTOFF) continue                    // nowhere near: reject cheaply
             normalize(tx, ty, nx, ny)
             val shape = meanDistance(sx, sy, nx, ny)
-            heap.offer(i, dict.logFreq(i) - W_LOCATION * location - W_SHAPE * shape)
+            heap.offer(tag, i, source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape)
         }
-        return heap.words(dict)
     }
 
     private fun bit(c: Char): Int = if (c in 'a'..'z') 1 shl (c - 'a') else 0
@@ -102,11 +121,11 @@ class GestureDecoder(
      * letters collapse to one point — "hello" has its two l's in the same place, and leaving both in
      * would stack two template samples and distort the resampling.
      */
-    private fun buildTemplate(g: KeyGrid, wi: Int, len: Int): Int {
+    private fun buildTemplate(g: KeyGrid, source: Dictionary, wi: Int, len: Int): Int {
         var n = 0
         var last = ' '
         for (k in 0 until len) {
-            val c = dict.charAt(wi, k)
+            val c = source.charAt(wi, k)
             if (c == last) continue
             if (!g.has(c)) return 0          // letter missing from this layout
             kx[n] = g.x(c)
@@ -203,28 +222,45 @@ class GestureDecoder(
         return sqrt(dx * dx + dy * dy)
     }
 
-    /** Fixed-size top-[limit] by score; [limit] is 3-5, so linear insertion beats a real heap. */
+    /**
+     * Fixed-size top-[limit] by score; [limit] is 3-5, so linear insertion beats a real heap. Entries
+     * are (source tag, index) rather than strings, so scoring never allocates.
+     */
     private class TopK(private val limit: Int) {
+        private val src = IntArray(limit)
         private val idx = IntArray(limit) { -1 }
         private val score = FloatArray(limit) { -Float.MAX_VALUE }
 
-        fun offer(i: Int, s: Float) {
+        fun offer(tag: Int, i: Int, s: Float) {
             if (s <= score[limit - 1]) return
             var p = limit - 1
             while (p > 0 && score[p - 1] < s) {
-                score[p] = score[p - 1]; idx[p] = idx[p - 1]; p--
+                score[p] = score[p - 1]; idx[p] = idx[p - 1]; src[p] = src[p - 1]; p--
             }
-            score[p] = s; idx[p] = i
+            score[p] = s; idx[p] = i; src[p] = tag
         }
 
-        fun words(dict: Dictionary): List<String> {
+        fun words(dict: Dictionary, user: UserWords): List<String> {
             val out = ArrayList<String>(limit)
-            for (k in 0 until limit) if (idx[k] >= 0) out.add(dict.word(idx[k]))
+            for (k in 0 until limit) {
+                if (idx[k] < 0) continue
+                out.add(
+                    if (src[k] == USER) {
+                        val w = user.dictionary?.word(idx[k]) ?: continue
+                        user.displayOf(w)   // the capitalisation the user typed
+                    } else {
+                        dict.word(idx[k])
+                    },
+                )
+            }
             return out
         }
     }
 
     companion object {
+        private const val MAIN = 0
+        private const val USER = 1
+
         /** Points each path is resampled to. 32 is SHARK²'s figure and plenty for word-sized strokes. */
         const val SAMPLES = 32
         /** Shortest word a gesture may produce. One letter is a tap, and two-letter strokes are so

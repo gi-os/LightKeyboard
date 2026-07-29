@@ -16,6 +16,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import app.lightphonekeyboard.text.UserWords
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
@@ -28,6 +29,8 @@ import androidx.core.view.WindowInsetsCompat
 class SetupActivity : AppCompatActivity() {
 
     private var voiceToggle: LightToggle? = null
+    /** Shows how many personal words are stored; refreshed in onResume, since the list screen edits it. */
+    private var wordsValue: TextView? = null
     private var voiceStatus: TextView? = null
     private var voiceAccessory: TextView? = null
     private var layoutValue: TextView? = null
@@ -116,6 +119,9 @@ class SetupActivity : AppCompatActivity() {
         val swipeToggle = toggle(R.string.setup_swipe, Prefs.swipeTyping(this)) {
             Prefs.setSwipeTyping(this, it)
         }
+        val suggestionsToggle = toggle(R.string.setup_suggestions, Prefs.suggestions(this)) {
+            Prefs.setSuggestions(this, it)
+        }
         val autocapToggle = toggle(R.string.setup_autocap, Prefs.autoCapitalize(this)) {
             Prefs.setAutoCapitalize(this, it)
         }
@@ -165,6 +171,24 @@ class SetupActivity : AppCompatActivity() {
         }
 
         // Keyboard height — same one-line picker pattern as layout: title left, current preset right.
+        // Opens the personal word list. A row rather than a toggle, because the content is a list and
+        // the setup screen would grow without limit if it lived here.
+        val wordsRow = run {
+            val title = label(getString(R.string.setup_words), 20f, R.color.white).apply { setPadding(0, 0, 0, 0) }
+            wordsValue = label("", 14f, R.color.gray).apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)   // top gap matching the spacing between toggles
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, UserWordsActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(wordsValue)
+            }
+        }
+
         val heightRow = run {
             val title = label(getString(R.string.setup_height), 20f, R.color.white).apply { setPadding(0, 0, 0, 0) }
             heightValue = label("", 14f, R.color.gray).apply { setPadding(0, 0, 0, 0) }
@@ -224,9 +248,10 @@ class SetupActivity : AppCompatActivity() {
 
         listOf(
             titleView, blurbView, s1.row, s2.row,
-            autocorrectToggle, swipeToggle, autocapToggle, autoperiodToggle, returnToggle, emojiToggle,
+            autocorrectToggle, swipeToggle, suggestionsToggle, autocapToggle, autoperiodToggle,
+            returnToggle, emojiToggle,
             voiceRow, voiceStatus!!,
-            layoutRow, heightRow, tryRow,
+            layoutRow, heightRow, wordsRow, tryRow,
         ).forEach { root.addView(it) }
 
         // Reflect the keyboard's real state on the chevron (▴ open / ▾ closed), however it's toggled.
@@ -251,6 +276,7 @@ class SetupActivity : AppCompatActivity() {
         super.onResume()
         refreshLayout()       // reflect a layout chosen on the picker page
         refreshHeight()       // reflect a height chosen on the picker page
+        refreshWords()        // reflect words added or removed on the word-list page
         refreshSetupState()   // steps may have been completed over in system settings
         contentResolver.registerContentObserver(
             Settings.Secure.getUriFor(Settings.Secure.DEFAULT_INPUT_METHOD), false, imeObserver,
@@ -313,6 +339,16 @@ class SetupActivity : AppCompatActivity() {
     /** Update the current-height name shown on the keyboard-height row. */
     private fun refreshHeight() {
         heightValue?.text = heightName(Prefs.keyHeight(this))
+    }
+
+    /** The word-list row shows the count, so the row says something without opening it. */
+    private fun refreshWords() {
+        val n = UserWords.deserialize(Prefs.userWords(this)).size
+        wordsValue?.text = when (n) {
+            0 -> getString(R.string.words_none)
+            1 -> getString(R.string.words_one)
+            else -> getString(R.string.words_many, n)
+        }
     }
 
     private fun heightName(key: String): String = when (key) {

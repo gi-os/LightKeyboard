@@ -7,6 +7,8 @@ object Prefs {
     private const val FILE = "light_keyboard_prefs"
     private const val KEY_AUTOCORRECT = "autocorrect"
     private const val KEY_SWIPE = "swipe_typing"
+    private const val KEY_SUGGESTIONS = "suggestions"
+    private const val KEY_USER_WORDS = "user_words"
     private const val KEY_VOICE = "voice_enabled"
     private const val KEY_COMPACT = "compact_mode"
     private const val KEY_AUTO_PERIOD = "auto_period"
@@ -34,6 +36,22 @@ object Prefs {
 
     fun setAutocorrect(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_AUTOCORRECT, value).apply()
+
+    /**
+     * The three-slot suggestion strip above the keys. OFF by default: this keyboard is a clone of the
+     * LightOS one, which has no suggestion bar, so showing one out of the box would change the look of
+     * every app on the phone without being asked.
+     */
+    fun suggestions(c: Context): Boolean = prefs(c).getBoolean(KEY_SUGGESTIONS, false)
+
+    fun setSuggestions(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_SUGGESTIONS, value).apply()
+
+    /** The user's own words (names and the like), newline-separated. See UserWords. */
+    fun userWords(c: Context): String? = prefs(c).getString(KEY_USER_WORDS, null)
+
+    fun setUserWords(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_USER_WORDS, value).apply()
 
     /** Swipe typing: drag across the letters to write a whole word. On by default. */
     fun swipeTyping(c: Context): Boolean = prefs(c).getBoolean(KEY_SWIPE, true)

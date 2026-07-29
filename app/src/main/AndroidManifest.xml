@@ -63,5 +63,12 @@
             android:name=".KeyboardHeightActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
+
+        <!-- The personal word list (names etc), opened from setup. -->
+        <activity
+            android:name=".UserWordsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

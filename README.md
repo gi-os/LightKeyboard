@@ -38,7 +38,14 @@ A few optional settings sit below:
   bundled in the app. Backspace once to undo a correction. Turn it off to type exactly what you tap.
 - **Swipe typing** (on by default): drag from letter to letter to write a whole word, then lift. The
   word appears with a space after it. If it guessed wrong, press backspace to cycle through the other
-  words your trace could have been — there is no suggestion bar, so the keyboard looks unchanged.
+  words your trace could have been.
+- **Suggestions** (off by default): a thin strip above the keys showing three words — completions of
+  what you are typing, the repair autocorrect has in mind, or the other readings of a swipe. Tap one to
+  use it. Off by default because the LightOS keyboard has no suggestion bar, and turning it on makes the
+  keyboard one strip taller in every app.
+- **My words**: names and anything else the dictionary has never heard of. A word you add stops being
+  autocorrected into something else, becomes a word autocorrect can arrive *at*, and becomes traceable
+  by swipe. Without it, "Bjorn" is rewritten to "born" every time you type it.
 - **Auto-Capitalize** (on by default): capitalizes the start of each sentence.
 - **Auto-Period** (on by default): double-tap the space bar to insert a period.
 - **Return key** / **Emoji keyboard** (both on by default): show or hide those keys.
@@ -67,8 +74,9 @@ The two bundled data files are generated, not hand-written — see [`tools/`](to
 - `res/raw/charmodel.bin` — character trigram model for per-tap key selection ([`tools/gen_charmodel.py`](tools/gen_charmodel.py))
 - `res/raw/words.bin` — the word list behind autocorrect and swipe typing ([`tools/gen_dict.py`](tools/gen_dict.py))
 
-The typing logic lives in `app/src/main/java/app/lightphonekeyboard/text/` and deliberately has no
-Android dependencies, so it is unit-tested on real data rather than only on a phone. The weights in
+The typing logic lives in `app/src/main/java/app/lightphonekeyboard/text/` — dictionary, autocorrect,
+swipe decoding, prefix completion and the personal word list — and deliberately has no Android
+dependencies, so it is unit-tested on real data rather than only on a phone. The weights in
 `Corrector.kt` and `GestureDecoder.kt` were fitted against the benchmarks in those tests — if you
 change them, run `./gradlew :app:test` and see what you traded away.
 

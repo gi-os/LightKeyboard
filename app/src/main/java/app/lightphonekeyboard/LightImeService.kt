@@ -103,7 +103,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         clearUndo()
         clearGesture()
         if (spell == null) initSpell()
+        // The settings screen is a separate Activity in the same process, so a word added there only
+        // reaches the running keyboard when it next opens.
+        engine.reloadUserWords()
         updateShift()
+        refreshSuggestions()
     }
 
     override fun onDestroy() {
@@ -121,7 +125,8 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         super.onUpdateSelection(
             oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd,
         )
-        updateShift() // after each keystroke/cursor move, recompute uppercase-vs-lowercase
+        updateShift()          // after each keystroke/cursor move, recompute uppercase-vs-lowercase
+        refreshSuggestions()   // ...and what the strip should be offering from here
     }
 
     /** Sentence-case: uppercase at a sentence start, lowercase after — from the field's caps mode.
@@ -358,6 +363,68 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         runCatching { sendBroadcast(Intent(ACTION_IME_VISIBILITY).putExtra(EXTRA_VISIBLE, visible)) }
     }
 
+    // ------------------------------------------------------------------ suggestion strip
+
+    /**
+     * A word tapped in the strip. Replaces the word being typed, or appends after a swipe, and adds the
+     * trailing space so the next word can be started straight away.
+     *
+     * Deliberately clears the correction-undo and swipe-cycle state: the user has just told us exactly
+     * which word they wanted, so a backspace afterwards should delete, not second-guess them.
+     */
+    override fun onSuggestion(word: String) {
+        val ic = currentInputConnection ?: return
+
+        // After a swipe there is no partial word at the cursor to replace — the gesture committed a
+        // whole word plus a trailing space. Tapping an alternative has to replace THAT, or the two words
+        // end up side by side, which is the opposite of choosing between them.
+        val committed = gestureCommitted
+        if (committed != null && ic.getTextBeforeCursor(committed.length, 0)?.toString() == committed) {
+            val replacement = gestureText(word)
+            clearUndo()
+            clearGesture()
+            ic.beginBatchEdit()
+            ic.deleteSurroundingText(committed.length, 0)
+            ic.commitText(replacement, 1)
+            ic.endBatchEdit()
+            refreshSuggestions()
+            return
+        }
+
+        val original = trailingWord()
+        clearUndo()
+        clearGesture()
+        ic.beginBatchEdit()
+        if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
+        val cased = if (original.isNotEmpty()) applyCase(original, word) else word
+        val lead = if (original.isEmpty() && needsLeadingSpace()) " " else ""
+        ic.commitText("$lead$cased ", 1)
+        ic.endBatchEdit()
+        refreshSuggestions()
+    }
+
+    /**
+     * Recompute the strip from where the cursor is now. Called after every keystroke and cursor move.
+     *
+     * Cheap enough to run unconditionally — the prefix search is bounded by the number of completions
+     * rather than the dictionary size — but skipped entirely when the strip isn't shown, so the setting
+     * being off costs nothing at all.
+     */
+    private fun refreshSuggestions() {
+        val kb = keyboard ?: return
+        if (!Prefs.suggestions(this)) return
+        val s = engine.suggester
+        if (s == null) { kb.setSuggestions(emptyList()); return }
+        // Mid-swipe-alternatives, the strip shows those instead: they are what the user is choosing
+        // between, and they are already ranked.
+        gestureAlternates?.let { alts ->
+            // Skip past the reading currently sitting in the field: offering it back does nothing.
+            kb.setSuggestions(alts.drop(gestureIndex + 1).take(SUGGESTION_SLOTS))
+            return
+        }
+        kb.setSuggestions(s.forPrefix(trailingWord(), SUGGESTION_SLOTS))
+    }
+
     // ------------------------------------------------------------------ swipe typing
 
     override fun onKeyGrid(grid: KeyGrid) {
@@ -390,6 +457,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         gestureAlternates = words
         gestureIndex = 0
         gestureCommitted = text
+        refreshSuggestions()
     }
 
     /**
@@ -415,6 +483,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         ic.commitText(next, 1)
         ic.endBatchEdit()
         gestureCommitted = next
+        refreshSuggestions()
         return true
     }
 
@@ -556,5 +625,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         private const val GRAPHEME_LOOKBACK = 16
         /** How many readings of one trace to keep, i.e. how many times backspace can cycle. */
         private const val GESTURE_ALTERNATES = 4
+        /** Slots in the suggestion strip. Mirrors Suggester.SLOTS. */
+        private const val SUGGESTION_SLOTS = 3
     }
 }

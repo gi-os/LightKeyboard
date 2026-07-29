@@ -6,6 +6,8 @@ import app.lightphonekeyboard.text.Corrector
 import app.lightphonekeyboard.text.Dictionary
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.Suggester
+import app.lightphonekeyboard.text.UserWords
 
 /**
  * Owns the bundled dictionary and the two things built on it: [Corrector] (autocorrect for tapped
@@ -32,6 +34,15 @@ class TextEngine(private val context: Context) {
     var decoder: GestureDecoder? = null
         private set
 
+    @Volatile
+    var suggester: Suggester? = null
+        private set
+
+    /** The user's own words, loaded from prefs and pushed into everything that searches. */
+    @Volatile
+    var userWords: UserWords = UserWords.EMPTY
+        private set
+
     private var loading = false
 
     val ready: Boolean get() = dictionary != null
@@ -53,9 +64,16 @@ class TextEngine(private val context: Context) {
             if (loaded != null) {
                 val c = Corrector(loaded)
                 val d = GestureDecoder(loaded)
+                val s = Suggester(loaded, c)
                 pendingGrid?.let { c.grid = it; d.grid = it }
+                val words = UserWords.deserialize(Prefs.userWords(context))
+                c.userWords = words
+                d.userWords = words
+                s.userWords = words
+                userWords = words
                 corrector = c
                 decoder = d
+                suggester = s
                 dictionary = loaded
             }
             loading = false
@@ -74,7 +92,22 @@ class TextEngine(private val context: Context) {
     }
 
     /** True if [word] is a real word — used to skip correcting something the user spelled right. */
-    fun isWord(word: String): Boolean = dictionary?.contains(word.lowercase()) ?: false
+    fun isWord(word: String): Boolean =
+        dictionary?.contains(word.lowercase()) == true || userWords.contains(word)
+
+    /**
+     * Re-read the personal word list. Called when the keyboard opens, because the settings screen may
+     * have changed it in the meantime — it is a separate Activity in the same process, so there is no
+     * live connection between the two beyond the shared preferences.
+     */
+    fun reloadUserWords() {
+        val words = UserWords.deserialize(Prefs.userWords(context))
+        if (words.entries == userWords.entries) return
+        userWords = words
+        corrector?.userWords = words
+        decoder?.userWords = words
+        suggester?.userWords = words
+    }
 
     private companion object {
         const val TAG = "LightKeyboard"

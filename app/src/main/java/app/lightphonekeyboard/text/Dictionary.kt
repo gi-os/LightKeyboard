@@ -55,6 +55,65 @@ class Dictionary private constructor(
         return lengthBand[lo] until lengthBand[hi + 1]
     }
 
+    /**
+     * Indices of up to [limit] words beginning with [prefix], most frequent first, excluding [prefix]
+     * itself. Used to fill the suggestion strip while typing.
+     *
+     * Words are sorted by length and then alphabetically, so within each length band the words sharing
+     * a prefix form one contiguous run — [lowerBound] finds where it starts and the scan stops at the
+     * first word that doesn't match. That means the work is proportional to the number of completions,
+     * not to the size of the dictionary, which is what lets this run on every keystroke.
+     */
+    fun completions(prefix: String, limit: Int): IntArray {
+        if (prefix.isEmpty() || limit <= 0) return IntArray(0)
+        val n = prefix.length
+        val best = IntArray(limit)
+        val bestScore = FloatArray(limit) { -Float.MAX_VALUE }
+        var found = 0
+        // A completion is at least as long as its prefix. Same length means the word IS the prefix,
+        // which is not a completion, so start one longer.
+        for (len in (n + 1)..maxLength) {
+            var i = lowerBound(len, prefix)
+            val end = lengthBand[len + 1]
+            while (i < end && startsWith(i, prefix)) {
+                val score = logFreq(i)
+                if (score > bestScore[limit - 1]) {
+                    var p = limit - 1
+                    while (p > 0 && bestScore[p - 1] < score) {
+                        bestScore[p] = bestScore[p - 1]; best[p] = best[p - 1]; p--
+                    }
+                    bestScore[p] = score; best[p] = i
+                    if (found < limit) found++
+                }
+                i++
+            }
+        }
+        return if (found == limit) best else best.copyOf(found)
+    }
+
+    /** First index in the band for [len] whose word is >= [prefix] on the prefix's own characters. */
+    private fun lowerBound(len: Int, prefix: String): Int {
+        var lo = lengthBand[len]
+        var hi = lengthBand[len + 1]
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (comparePrefix(mid, prefix) < 0) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
+    private fun startsWith(i: Int, prefix: String): Boolean = comparePrefix(i, prefix) == 0
+
+    /** Compare word [i] against [prefix], looking only as far as the prefix runs. */
+    private fun comparePrefix(i: Int, prefix: String): Int {
+        val base = starts[i]
+        for (k in prefix.indices) {
+            val d = chars[base + k].code - prefix[k].code
+            if (d != 0) return d
+        }
+        return 0
+    }
+
     /** Index of [w], or -1. Binary search inside the word's own length band. */
     fun indexOf(w: String): Int {
         val n = w.length
@@ -87,6 +146,8 @@ class Dictionary private constructor(
 
     companion object {
         const val NON_ALPHA_BIT = 1 shl 26
+        /** Longest word the format and the scorers' scratch buffers allow. */
+        const val MAX_WORD = 24
         private const val MAGIC = 0x314C4B44   // 'LKD1'
 
         /** Letter bitmask of [w]; bit 26 marks any character outside a-z. */
@@ -97,6 +158,47 @@ class Dictionary private constructor(
                 m = m or if (l in 'a'..'z') 1 shl (l - 'a') else NON_ALPHA_BIT
             }
             return m
+        }
+
+        /**
+         * Build a dictionary in memory from `word to lnProbability` pairs.
+         *
+         * This is how the user's own words (see UserDictionary) become searchable: they end up in the
+         * same structure as the bundled list, so [Corrector] and [GestureDecoder] can scan them with
+         * exactly the same code rather than growing a parallel path for a handful of names. Words are
+         * lowercased and anything containing a character the keyboard can't produce is dropped.
+         */
+        fun of(entries: List<Pair<String, Float>>): Dictionary {
+            // The invariant the whole structure rests on: sorted by length, then alphabetically.
+            val clean = entries
+                .map { it.first.lowercase() to it.second }
+                .filter { (w, _) -> w.isNotEmpty() && w.length <= MAX_WORD && w.all { c -> c in 'a'..'z' || c == '\'' } }
+                .distinctBy { it.first }
+                .sortedWith(compareBy({ it.first.length }, { it.first }))
+            val count = clean.size
+            val starts = IntArray(count + 1)
+            val logf = ShortArray(count)
+            val mask = IntArray(count)
+            val chars = CharArray(clean.sumOf { it.first.length })
+            var pos = 0
+            var maxLen = 1
+            for ((i, e) in clean.withIndex()) {
+                val (w, lp) = e
+                starts[i] = pos
+                for (c in w) chars[pos++] = c
+                logf[i] = (lp * 1000f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                mask[i] = maskOf(w)
+                if (w.length > maxLen) maxLen = w.length
+            }
+            starts[count] = pos
+            val band = IntArray(maxLen + 2)
+            band[maxLen + 1] = count
+            var i = count - 1
+            for (n in maxLen downTo 1) {
+                while (i >= 0 && starts[i + 1] - starts[i] >= n) i--
+                band[n] = i + 1
+            }
+            return Dictionary(chars, starts, logf, mask, band)
         }
 
         /**

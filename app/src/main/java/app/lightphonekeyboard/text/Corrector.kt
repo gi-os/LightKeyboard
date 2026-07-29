@@ -31,6 +31,10 @@ class Corrector(
     @Volatile
     var grid: KeyGrid = grid
 
+    /** The user's own words. Scanned as a second pass, so the 60k-word hot loop stays untouched. */
+    @Volatile
+    var userWords: UserWords = UserWords.EMPTY
+
     /**
      * The correction for [typed], or null to leave it exactly as typed. Case is not considered here —
      * the caller re-applies the user's capitalisation.
@@ -50,7 +54,10 @@ class Corrector(
         if (typed.any { it.isDigit() }) return emptyList()
         if (typed.drop(1).any { it.isUpperCase() }) return emptyList()
         if (w.any { it !in 'a'..'z' && it != '\'' }) return emptyList()
-        if (dict.contains(w)) return emptyList()
+        // A word the user added is a real word by definition. This is the whole reason the personal
+        // list exists: "Basil" is in no spelling dictionary, so without this it gets rewritten to
+        // "Basic" every time it is typed.
+        if (dict.contains(w) || userWords.contains(w)) return emptyList()
 
         val budget = budgetFor(n)
         val typedMask = Dictionary.maskOf(w)
@@ -60,15 +67,30 @@ class Corrector(
         val maxLetterMismatch = budget.toInt() + 1
 
         val heap = TopK(limit)
-        for (i in dict.lengthRange(n - MAX_LENGTH_DELTA, n + MAX_LENGTH_DELTA)) {
-            val m = dict.mask(i)
+        scan(dict, MAIN, w, n, typedMask, maxLetterMismatch, budget, heap)
+        userWords.dictionary?.let { scan(it, USER, w, n, typedMask, maxLetterMismatch, budget, heap) }
+        return heap.words(dict, userWords)
+    }
+
+    /** Score every plausible candidate in [source] into [heap]. Shared by the bundled and user lists. */
+    private fun scan(
+        source: Dictionary,
+        tag: Int,
+        typed: String,
+        n: Int,
+        typedMask: Int,
+        maxLetterMismatch: Int,
+        budget: Float,
+        heap: TopK,
+    ) {
+        for (i in source.lengthRange(n - MAX_LENGTH_DELTA, n + MAX_LENGTH_DELTA)) {
+            val m = source.mask(i)
             if (Integer.bitCount(m and typedMask.inv()) > maxLetterMismatch) continue
             if (Integer.bitCount(typedMask and m.inv()) > maxLetterMismatch) continue
-            val cost = editCost(w, i, budget)
+            val cost = editCost(typed, source, i, budget)
             if (cost > budget) continue
-            heap.offer(i, dict.logFreq(i) - LAMBDA * cost)
+            heap.offer(tag, i, source.logFreq(i) - LAMBDA * cost)
         }
-        return heap.words(dict)
     }
 
     /**
@@ -95,9 +117,9 @@ class Corrector(
      * substitutions, discounted repeat-letter slips, and early abandonment once every cell in a row
      * exceeds [budget] (no later row can come back down, since costs are non-negative).
      */
-    internal fun editCost(typed: String, wi: Int, budget: Float): Float {
+    internal fun editCost(typed: String, source: Dictionary, wi: Int, budget: Float): Float {
         val n = typed.length
-        val m = dict.length(wi)
+        val m = source.length(wi)
         val g = grid
         for (j in 0..m) prev[j] = j * INDEL
         var pRow = prev
@@ -109,20 +131,20 @@ class Corrector(
             cRow[0] = i * INDEL
             var rowMin = cRow[0]
             for (j in 1..m) {
-                val b = dict.charAt(wi, j - 1)
+                val b = source.charAt(wi, j - 1)
                 // Substitution priced by key separation: landing one key over is a common slip,
                 // landing across the keyboard is not a slip at all.
                 val sub = pRow[j - 1] + if (a == b) 0f else subCost(g, a, b)
                 // Deleting a typed char that repeats its neighbour, or inserting one that repeats
                 // the candidate's, is the "helo"/"belive" class of error — the most common of all.
                 val delRepeat = i > 1 && typed[i - 2] == a
-                val insRepeat = j > 1 && dict.charAt(wi, j - 2) == b
+                val insRepeat = j > 1 && source.charAt(wi, j - 2) == b
                 val del = cRow[j - 1] + if (insRepeat) REPEAT else INDEL
                 val ins = pRow[j] + if (delRepeat) REPEAT else INDEL
                 var v = if (sub < del) sub else del
                 if (ins < v) v = ins
                 // Transposition: two keys rolled in the wrong order ("teh").
-                if (i > 1 && j > 1 && a == dict.charAt(wi, j - 2) && typed[i - 2] == b) {
+                if (i > 1 && j > 1 && a == source.charAt(wi, j - 2) && typed[i - 2] == b) {
                     val t = p2Row[j - 2] + TRANSPOSE
                     if (t < v) v = t
                 }
@@ -150,28 +172,47 @@ class Corrector(
         return if (scaled > 1f) 1f else scaled
     }
 
-    /** A tiny fixed-size max-heap-by-score. [limit] is 1-3, so linear insertion is the cheap choice. */
+    /**
+     * A tiny fixed-size max-heap-by-score. [limit] is 1-3, so linear insertion is the cheap choice.
+     * Entries are held as (source tag, index) rather than as strings, so a candidate that merely beats
+     * the current worst doesn't allocate — only the handful that survive to the end are materialised.
+     */
     private class TopK(private val limit: Int) {
+        private val src = IntArray(limit)
         private val idx = IntArray(limit) { -1 }
         private val score = FloatArray(limit) { -Float.MAX_VALUE }
 
-        fun offer(i: Int, s: Float) {
+        fun offer(tag: Int, i: Int, s: Float) {
             if (s <= score[limit - 1]) return
             var p = limit - 1
             while (p > 0 && score[p - 1] < s) {
-                score[p] = score[p - 1]; idx[p] = idx[p - 1]; p--
+                score[p] = score[p - 1]; idx[p] = idx[p - 1]; src[p] = src[p - 1]; p--
             }
-            score[p] = s; idx[p] = i
+            score[p] = s; idx[p] = i; src[p] = tag
         }
 
-        fun words(dict: Dictionary): List<String> {
+        fun words(dict: Dictionary, user: UserWords): List<String> {
             val out = ArrayList<String>(limit)
-            for (k in 0 until limit) if (idx[k] >= 0) out.add(dict.word(idx[k]))
+            for (k in 0 until limit) {
+                if (idx[k] < 0) continue
+                out.add(
+                    if (src[k] == USER) {
+                        // Give back the capitalisation the user typed — the point of adding a name.
+                        val w = user.dictionary?.word(idx[k]) ?: continue
+                        user.displayOf(w)
+                    } else {
+                        dict.word(idx[k])
+                    },
+                )
+            }
             return out
         }
     }
 
     companion object {
+        private const val MAIN = 0
+        private const val USER = 1
+
         /** Below this we don't guess: a two-letter typo has too many equally good readings. */
         const val MIN_LENGTH = 3
         const val MAX_LENGTH = 24
