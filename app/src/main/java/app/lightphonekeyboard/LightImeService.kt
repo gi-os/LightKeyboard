@@ -15,6 +15,7 @@ import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.StripItem
 import java.util.Locale
 
 /**
@@ -372,7 +373,12 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * Deliberately clears the correction-undo and swipe-cycle state: the user has just told us exactly
      * which word they wanted, so a backspace afterwards should delete, not second-guess them.
      */
-    override fun onSuggestion(word: String) {
+    override fun onSuggestion(item: StripItem) {
+        if (item.literal) {
+            keepAsTyped(item.word)
+            return
+        }
+        val word = item.word
         val ic = currentInputConnection ?: return
 
         // After a swipe there is no partial word at the cursor to replace — the gesture committed a
@@ -404,6 +410,47 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     /**
+     * The `"word"` slot: keep what was typed, and stop the keyboard arguing about it again.
+     *
+     * Two halves, and both matter. Committing it finishes the word with a space so autocorrect-on-space
+     * never runs on it, which is what makes the tap feel like "no, this one". Learning it into
+     * [app.lightphonekeyboard.text.UserWords] is what makes the tap worth doing once rather than every time — the same list the
+     * corrector and the swipe decoder read, so from here on the word is not corrected away, is
+     * something a correction can arrive at, and is traceable by swipe.
+     *
+     * No case coercion, unlike [onSuggestion]: the whole point is that this is the text as typed.
+     */
+    private fun keepAsTyped(word: String) {
+        val ic = currentInputConnection ?: return
+        val original = trailingWord()
+        clearUndo()
+        clearGesture()
+        ic.beginBatchEdit()
+        if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
+        val lead = if (original.isEmpty() && needsLeadingSpace()) " " else ""
+        ic.commitText("$lead$word ", 1)
+        ic.endBatchEdit()
+        learnWord(word)
+        refreshSuggestions()
+    }
+
+    /**
+     * Add [word] to the personal list and make every scorer see it immediately.
+     *
+     * Goes through prefs rather than mutating the engine directly, because the "My words" screen is a
+     * separate Activity reading the same preferences — writing there is what keeps the two in step.
+     * [app.lightphonekeyboard.text.UserWords.withWord] silently ignores a duplicate or an unacceptable word, so the entry-count
+     * comparison is what decides whether anything needs saving.
+     */
+    private fun learnWord(word: String) {
+        val before = engine.userWords
+        val after = before.withWord(word)
+        if (after.entries == before.entries) return
+        Prefs.setUserWords(this, after.serialize())
+        engine.reloadUserWords()
+    }
+
+    /**
      * Recompute the strip from where the cursor is now. Called after every keystroke and cursor move.
      *
      * Cheap enough to run unconditionally — the prefix search is bounded by the number of completions
@@ -419,10 +466,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         // between, and they are already ranked.
         gestureAlternates?.let { alts ->
             // Skip past the reading currently sitting in the field: offering it back does nothing.
-            kb.setSuggestions(alts.drop(gestureIndex + 1).take(SUGGESTION_SLOTS))
+            // No literal slot here: a swipe has no typed spelling to keep, only other readings.
+            kb.setSuggestions(
+                alts.drop(gestureIndex + 1).take(SUGGESTION_SLOTS).map { StripItem(it) },
+            )
             return
         }
-        kb.setSuggestions(s.forPrefix(trailingWord(), SUGGESTION_SLOTS))
+        kb.setSuggestions(s.stripFor(trailingWord(), SUGGESTION_SLOTS))
     }
 
     // ------------------------------------------------------------------ swipe typing

@@ -63,8 +63,65 @@ class Suggester(
         return out
     }
 
+    /**
+     * The word exactly as typed, offered in the leftmost slot so it can be kept — iOS's `"teh"` slot.
+     *
+     * Returns null when offering it would be pointless rather than helpful:
+     *
+     *  - nothing typed yet;
+     *  - a word [UserWords] would refuse anyway (too short, digits, punctuation), because the slot's
+     *    whole purpose is to add it and a slot that silently fails to is worse than no slot;
+     *  - a word the keyboard already knows. Nothing to learn, nothing about to be corrected away, and
+     *    quoting a correctly spelled word makes the strip look like it is second-guessing you.
+     *
+     * That last rule is narrower than iOS, which shows the literal whenever *any* autocorrection is
+     * pending, including one real word being swapped for another. This covers the case the user
+     * actually needs — names and jargon the dictionary has never heard of — without putting quotes on
+     * screen for every ordinary word.
+     */
+    fun literalFor(prefix: String): String? {
+        if (prefix.isEmpty()) return null
+        if (!UserWords.isAcceptable(prefix)) return null
+        if (dict.contains(prefix.lowercase()) || userWords.contains(prefix)) return null
+        return prefix
+    }
+
+    /**
+     * The whole strip for a word being typed: the literal first when there is one, then the ordinary
+     * suggestions from [forPrefix] filling what is left.
+     *
+     * The literal takes a slot rather than being squeezed in beside them, so on an unknown word the
+     * strip is literal + two suggestions and on a known word it is three suggestions — which is how
+     * the strip stays the same width while its contents change.
+     */
+    fun stripFor(prefix: String, limit: Int = SLOTS): List<StripItem> {
+        if (limit <= 0) return emptyList()
+        val literal = literalFor(prefix)
+        val out = ArrayList<StripItem>(limit)
+        if (literal != null) out.add(StripItem(literal, literal = true))
+        for (w in forPrefix(prefix, limit - out.size)) {
+            // A completion can equal the literal in case only ("Basil" added, "basil" typed) — the
+            // same word twice in one strip is a wasted slot.
+            if (out.none { it.word.equals(w, ignoreCase = true) }) out.add(StripItem(w))
+            if (out.size >= limit) break
+        }
+        return out
+    }
+
     companion object {
         /** Slots in the strip. Three is what fits legibly at this text size on the Light Phone. */
         const val SLOTS = 3
     }
 }
+
+/**
+ * One slot of the suggestion strip.
+ *
+ * [literal] separates "the word you typed, keep it and learn it" from an ordinary suggestion. The two
+ * look different (the literal is quoted) and do different things when tapped, and the difference is
+ * decided here in the pure layer rather than re-derived by comparing strings in the IME.
+ */
+data class StripItem(
+    val word: String,
+    val literal: Boolean = false,
+)

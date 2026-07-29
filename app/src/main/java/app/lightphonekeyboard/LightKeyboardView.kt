@@ -14,6 +14,7 @@ import android.view.VelocityTracker
 import android.view.View
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.StripItem
 import app.lightphonekeyboard.text.Suggester
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -77,8 +78,8 @@ class LightKeyboardView @JvmOverloads constructor(
         /** The laid-out a-z key positions, in key units. Re-sent on every relayout. */
         fun onKeyGrid(grid: KeyGrid)
 
-        /** A word tapped in the suggestion strip. */
-        fun onSuggestion(word: String)
+        /** A slot tapped in the suggestion strip. [StripItem.literal] marks the keep-as-typed slot. */
+        fun onSuggestion(item: StripItem)
     }
 
     var listener: Listener? = null
@@ -291,7 +292,7 @@ class LightKeyboardView @JvmOverloads constructor(
     // Three slots above the top row, present only when the setting is on. Kept out of [placed] and
     // hit-tested separately: the key rects deliberately tile the whole surface with no gaps, and
     // threading a fourth kind of cell through that would put dead zones between the strip and the keys.
-    private var suggestions: List<String> = emptyList()
+    private var suggestions: List<StripItem> = emptyList()
     private var pressedSuggestion = -1
     /** Height of the strip, or 0 when it isn't shown. Everything below shifts down by this. */
     private var stripH = 0f
@@ -491,10 +492,14 @@ class LightKeyboardView @JvmOverloads constructor(
         textPaint.textSize = stripTextSize
         val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
         for (i in 0 until Suggester.SLOTS) {
-            val word = suggestionAt(i) ?: continue
+            val item = suggestionAt(i) ?: continue
             val cx = (i + 0.5f) * slotW
+            // Quotes mark the keep-as-typed slot, the same signal iOS uses. Straight quotes rather
+            // than typographic ones: the strip renders in the Light SDK's font and a missing glyph
+            // would show as tofu right where the user is being asked to trust the word.
+            val label = if (item.literal) "\"${item.word}\"" else item.word
             // Ellipsise rather than overflow into the neighbouring slot.
-            canvas.drawText(fitToWidth(word, slotW - dpf(10)), cx, baseline, textPaint)
+            canvas.drawText(fitToWidth(label, slotW - dpf(10)), cx, baseline, textPaint)
         }
         // Dividers between occupied slots only, so an empty strip is just empty.
         for (i in 1 until Suggester.SLOTS) {
@@ -504,7 +509,8 @@ class LightKeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun suggestionAt(i: Int): String? = suggestions.getOrNull(i)?.takeIf { it.isNotEmpty() }
+    private fun suggestionAt(i: Int): StripItem? =
+        suggestions.getOrNull(i)?.takeIf { it.word.isNotEmpty() }
 
     /** [text], truncated with an ellipsis until it fits [maxWidth] at the current [textPaint] size. */
     private fun fitToWidth(text: String, maxWidth: Float): String {
@@ -722,9 +728,9 @@ class LightKeyboardView @JvmOverloads constructor(
                 velocityTracker?.recycle()
                 velocityTracker = null
                 if (slot >= 0) {
-                    val word = suggestionAt(slot)
+                    val item = suggestionAt(slot)
                     invalidate()
-                    if (word != null) { tap(); listener?.onSuggestion(word) }
+                    if (item != null) { tap(); listener?.onSuggestion(item) }
                     return true
                 }
                 if (tracing) finishTrace() else invalidate()
@@ -1084,11 +1090,11 @@ class LightKeyboardView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
-    /** Replace the strip's contents. Fewer than three words leaves the remaining slots blank. */
-    fun setSuggestions(words: List<String>) {
+    /** Replace the strip's contents. Fewer than three items leaves the remaining slots blank. */
+    fun setSuggestions(items: List<StripItem>) {
         if (stripH <= 0f) return
-        if (words == suggestions) return
-        suggestions = words
+        if (items == suggestions) return
+        suggestions = items
         pressedSuggestion = -1
         invalidate()
     }

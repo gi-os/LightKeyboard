@@ -43,6 +43,13 @@ A few optional settings sit below:
   what you are typing, the repair autocorrect has in mind, or the other readings of a swipe. Tap one to
   use it. Off by default because the LightOS keyboard has no suggestion bar, and turning it on makes the
   keyboard one strip taller in every app.
+
+  On a word the dictionary does not know, the **left slot shows what you actually typed, in quotes** —
+  the same idea as iOS's `"word"` slot. Tapping it keeps your spelling *and* adds it to **My words**, so
+  you only have to defend a name once. Type `Bjorn`, tap `"Bjorn"`, and it is never rewritten to "born"
+  again. On a word already in the dictionary the slot is not shown, because there is nothing to learn
+  and nothing about to be corrected — the strip should not look like it doubts a correctly spelled
+  word.
 - **My words**: names and anything else the dictionary has never heard of. A word you add stops being
   autocorrected into something else, becomes a word autocorrect can arrive *at*, and becomes traceable
   by swipe. Without it, "Bjorn" is rewritten to "born" every time you type it.
