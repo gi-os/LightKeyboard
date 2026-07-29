@@ -12,6 +12,8 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
+import app.lightphonekeyboard.text.GestureDecoder
+import app.lightphonekeyboard.text.KeyGrid
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -33,6 +35,12 @@ import kotlin.math.sqrt
  *   - Touches are tracked per pointer, so overlapping/rolling presses each register.
  *
  * Swipe DOWN anywhere on the keyboard closes it ([Listener.onDismiss]).
+ *
+ * Dragging ACROSS the letters is swipe typing: the path is collected in key units and handed to the
+ * host as [Listener.onGesture], which decodes it to a word. The two gestures don't collide because
+ * dismiss requires clearly *downward* motion and is recognised within about 30dp, well before a word
+ * trace has gone anywhere; see [onTouchEvent]. The character the first key committed on touch-down is
+ * retracted the moment either gesture is recognised, so neither leaves a stray letter behind.
  *
  * Future: Apple-style dynamic target resizing (silently growing the hit rects of likely next letters
  * from a language model while the visible keys stay put) would build on this tiled-rect foundation.
@@ -57,6 +65,16 @@ class LightKeyboardView @JvmOverloads constructor(
         fun onMic()
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
+
+        /**
+         * A finished swipe-typing trace. [xs]/[ys] hold the first [count] points in *key units*
+         * (x / key width, y / row pitch), matching the geometry reported by [onKeyGrid], so the host
+         * can decode without knowing anything about pixels.
+         */
+        fun onGesture(xs: FloatArray, ys: FloatArray, count: Int)
+
+        /** The laid-out a-z key positions, in key units. Re-sent on every relayout. */
+        fun onKeyGrid(grid: KeyGrid)
     }
 
     var listener: Listener? = null
@@ -79,32 +97,32 @@ class LightKeyboardView @JvmOverloads constructor(
             listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "z", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.ENTER, Key.MIC),
+            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         // French AZERTY and German QWERTZ — same control keys, only the three letter rows differ.
         val azerty = listOf(
             listOf("a", "z", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("q", "s", "d", "f", "g", "h", "j", "k", "l", "m"),
             listOf(Key.SHIFT, "w", "x", "c", "v", "b", "n", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.ENTER, Key.MIC),
+            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val qwertz = listOf(
             listOf("q", "w", "e", "r", "t", "z", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "y", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.ENTER, Key.MIC),
+            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val symbols = listOf(
             listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
             listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""),
             listOf(Key.MORE, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.ENTER, Key.MIC),
+            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val more = listOf(
             listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="),
             listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥"),
             listOf(Key.SYMBOLS, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.ENTER, Key.MIC),
+            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val emoji = listOf(
             "😅", "😊", "🙃", "😍", "😜", "😂", "😭", "😎",
@@ -124,6 +142,7 @@ class LightKeyboardView @JvmOverloads constructor(
     // Prefs cached on reset()/init so the layout pass doesn't re-read SharedPreferences per row.
     private var keyLayout = Prefs.LAYOUT_QWERTY
     private var autoPeriod = true
+    private var swipeTyping = true
     private val hiddenKeys = HashSet<String>()   // control keys removed by their settings toggles
 
     // Voice-dictation listening overlay (drawn instead of keys while the recognizer is active).
@@ -206,6 +225,7 @@ class LightKeyboardView @JvmOverloads constructor(
 
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
+        swipeTyping = Prefs.swipeTyping(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
         if (!Prefs.emojiKey(context)) hiddenKeys.add(Key.EMOJI)
@@ -222,6 +242,12 @@ class LightKeyboardView @JvmOverloads constructor(
     }
     private val spacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+    private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(150, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = dpf(3)
+        strokeCap = Paint.Cap.ROUND
+    }
     private val iconCache = HashMap<Int, Drawable>()
 
     // --- touch tracking ---
@@ -232,6 +258,21 @@ class LightKeyboardView @JvmOverloads constructor(
     private var firstKeyRetractable = false   // did the gesture's first tap commit a retractable char?
     private var dismissedThisGesture = false
     private var velocityTracker: VelocityTracker? = null   // for early swipe-down (dismiss) detection
+
+    // --- swipe typing ---
+    // The trace is collected in key units, in fixed-size arrays: a gesture is a stream of MotionEvents
+    // arriving every few milliseconds, and allocating on each one is exactly the wrong thing to do
+    // while the user is mid-word. A trace longer than the cap simply stops recording — by then there
+    // is far more shape than the 32-sample decoder can use.
+    private val traceX = FloatArray(MAX_TRACE_POINTS)
+    private val traceY = FloatArray(MAX_TRACE_POINTS)
+    private var traceCount = 0
+    private var tracing = false
+    /** Pixel copy of the trace, for drawing the trail. Same indices as [traceX]/[traceY]. */
+    private val trailX = FloatArray(MAX_TRACE_POINTS)
+    private val trailY = FloatArray(MAX_TRACE_POINTS)
+    /** Width of a letter key (px). The x half of the key-unit conversion; y uses [rowPitch]. */
+    private var letterKeyW = 1f
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -302,6 +343,19 @@ class LightKeyboardView @JvmOverloads constructor(
             layoutRow(rows[i], bandTop, bandBottom, visTop, visBottom, w)
         }
         for (k in placed) if (isLetter(k.id)) letterKeys.add(k)
+        publishKeyGrid()
+    }
+
+    /**
+     * Hand the host the a-z key centres in key units, so the corrector and the swipe decoder score
+     * against the geometry that is actually on screen. This is what makes AZERTY / QWERTZ and the
+     * three height presets work with no per-layout tables anywhere in the text logic.
+     */
+    private fun publishKeyGrid() {
+        if (letterKeys.isEmpty()) return
+        letterKeyW = letterKeys[0].vis.width().coerceAtLeast(1f)
+        val positions = letterKeys.map { Triple(it.id[0], it.cx / letterKeyW, it.cy / rowPitch) }
+        listener?.onKeyGrid(KeyGrid.of(positions))
     }
 
     private fun layoutRow(
@@ -382,6 +436,20 @@ class LightKeyboardView @JvmOverloads constructor(
                 canvas.drawRoundRect(pk.vis, r, r, pressPaint)
             }
             drawKey(canvas, pk)
+        }
+        if (tracing) drawTrail(canvas)
+    }
+
+    /**
+     * The swipe-typing trail. It exists only while a finger is down and vanishes the instant the word
+     * commits, so the keyboard at rest is unchanged — but without it a swipe gives no sign it was
+     * understood as anything but a mis-tap, which reads as the keyboard being broken. Thin and grey
+     * rather than a bright ribbon, to sit inside the LightOS palette.
+     */
+    private fun drawTrail(canvas: Canvas) {
+        if (traceCount < 2) return
+        for (i in 1 until traceCount) {
+            canvas.drawLine(trailX[i - 1], trailY[i - 1], trailX[i], trailY[i], trailPaint)
         }
     }
 
@@ -502,23 +570,34 @@ class LightKeyboardView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                val idx = ev.actionIndex
-                pressDown(ev.getPointerId(idx), ev.getX(idx), ev.getY(idx))
+                // Ignored mid-trace: a second finger landing while a word is being drawn is a palm or
+                // a stray thumb, and typing its letter would corrupt the word about to be committed.
+                if (!tracing) {
+                    val idx = ev.actionIndex
+                    pressDown(ev.getPointerId(idx), ev.getX(idx), ev.getY(idx))
+                }
             }
 
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(ev)
-                if (!dismissedThisGesture) {
-                    val idx = ev.findPointerIndex(firstPointerId)
-                    if (idx >= 0) {
-                        val dy = ev.getY(idx) - downY
-                        val dx = ev.getX(idx) - downX
+                val idx = ev.findPointerIndex(firstPointerId)
+                if (idx >= 0 && !dismissedThisGesture) {
+                    val x = ev.getX(idx)
+                    val y = ev.getY(idx)
+                    if (!tracing) {
+                        val dy = y - downY
+                        val dx = x - downX
                         velocityTracker?.computeCurrentVelocity(1000)
                         val vy = velocityTracker?.getYVelocity(firstPointerId) ?: 0f
                         // Recognise the dismiss swipe as early as possible so the char committed on
                         // key-down is retracted almost immediately, instead of lingering as a flash of a
                         // letter: a short downward drag (30dp) OR a quick downward flick both count, as
                         // long as the motion is clearly vertical.
+                        //
+                        // This is checked BEFORE the word-trace test, and it demands clearly vertical
+                        // downward motion, so the two gestures stay separable: a word trace runs mostly
+                        // across the rows, and one that genuinely starts by diving straight down was a
+                        // dismiss as far as anyone watching is concerned.
                         val verticalDrag = dy > abs(dx) * 1.5f
                         if (verticalDrag && (dy > dpf(30) || (vy > dpf(900) && dy > dpf(14)))) {
                             dismissedThisGesture = true
@@ -529,8 +608,11 @@ class LightKeyboardView @JvmOverloads constructor(
                             pressed.clear()
                             invalidate()
                             listener?.onDismiss()
+                        } else {
+                            maybeStartTrace(x, y)
                         }
                     }
+                    if (tracing) addTracePoint(x, y)
                 }
             }
 
@@ -541,11 +623,20 @@ class LightKeyboardView @JvmOverloads constructor(
                 invalidate()
             }
 
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_UP -> {
                 pressed.clear()
                 stopBackspaceRepeat()
                 velocityTracker?.recycle()
                 velocityTracker = null
+                if (tracing) finishTrace() else invalidate()
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                pressed.clear()
+                stopBackspaceRepeat()
+                velocityTracker?.recycle()
+                velocityTracker = null
+                abandonTrace()   // the window took the gesture away; don't guess a word from half of it
                 invalidate()
             }
         }
@@ -573,6 +664,86 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun stopBackspaceRepeat() {
         backspacePointerId = -1
         removeCallbacks(backspaceRepeat)
+    }
+
+    // ------------------------------------------------------------------ swipe typing
+
+    /**
+     * Promote an in-progress drag to a word trace, if it looks like one. Three conditions, and all
+     * three matter:
+     *
+     *  - it began on a letter (so dragging off `123` or the space bar still does nothing);
+     *  - the finger has left the key it started on — a tap with a shaky finger must never become a
+     *    gesture, because that would eat ordinary typing;
+     *  - only one finger is down, since rolling two keys at once is fast typing, not a trace.
+     *
+     * The letter the starting key committed on touch-down is retracted here: it was the gesture's
+     * first letter, and the decoded word will supply it.
+     */
+    private fun maybeStartTrace(x: Float, y: Float) {
+        if (!swipeTyping || layer != Layer.LETTERS || letterKeys.isEmpty()) return
+        if (pressed.size != 1) return
+        val start = pressed[firstPointerId] ?: return
+        if (!isLetter(start.id)) return
+        val dx = x - downX
+        val dy = y - downY
+        if (dx * dx + dy * dy < traceStartDist * traceStartDist) return
+        if (start.hit.contains(x.coerceIn(0f, width - 1f), y.coerceIn(0f, height - 1f))) return
+
+        tracing = true
+        stopBackspaceRepeat()
+        if (firstKeyRetractable) listener?.onBackspace()
+        firstKeyRetractable = false
+        pressed.clear()
+        traceCount = 0
+        addTracePoint(downX, downY)
+        addTracePoint(x, y)
+    }
+
+    /**
+     * Record one traced point, in pixels for the trail and in key units for the decoder. Points closer
+     * than [traceMinStep] to the last one are dropped: the digitiser reports far more samples than the
+     * decoder can use, and a cluster of them where the finger slowed down would drag the decoder's
+     * equal-spacing resample toward the pause and distort the stroke.
+     */
+    private fun addTracePoint(x: Float, y: Float) {
+        if (traceCount >= MAX_TRACE_POINTS) return
+        if (traceCount > 0) {
+            val dx = x - trailX[traceCount - 1]
+            val dy = y - trailY[traceCount - 1]
+            if (dx * dx + dy * dy < traceMinStep * traceMinStep) return
+        }
+        trailX[traceCount] = x
+        trailY[traceCount] = y
+        traceX[traceCount] = x / letterKeyW
+        // Same upward parallax correction the tap model applies (fingers register low). One averaged
+        // offset rather than the per-row values, since a trace crosses rows by definition.
+        traceY[traceCount] = (y + averageBiasY()) / rowPitch
+        traceCount++
+        invalidate()
+    }
+
+    private fun averageBiasY(): Float {
+        var sum = 0f
+        for (v in learnedBiasY) sum += v
+        return sum / learnedBiasY.size
+    }
+
+    /**
+     * Hand the finished trace to the host for decoding. [traceX]/[traceY] are passed as-is rather than
+     * copied — [Listener.onGesture] decodes synchronously and must not retain them.
+     */
+    private fun finishTrace() {
+        tracing = false
+        val n = traceCount
+        traceCount = 0
+        invalidate()
+        if (n >= 3) listener?.onGesture(traceX, traceY, n)
+    }
+
+    private fun abandonTrace() {
+        tracing = false
+        traceCount = 0
     }
 
     /** Tiled rects always contain the point; the nearest-center fallback only covers off-surface taps. */
@@ -781,6 +952,7 @@ class LightKeyboardView @JvmOverloads constructor(
      *  (the IME's updateShift refines it immediately). */
     fun reset(numeric: Boolean = false) {
         stopBackspaceRepeat()
+        abandonTrace()
         saveLearnedOffsets()   // persist what we learned in the field we're leaving
         applyPrefs()
         // Number / phone / date fields open straight on the symbols layer (its top row is 1-0).
@@ -822,6 +994,9 @@ class LightKeyboardView @JvmOverloads constructor(
      * sentence start, lowercase after the first letter. One-shot — a manual SHIFT tap holds only
      * until the next letter, after which the IME recomputes this.
      */
+    /** Whether the next letter would be typed uppercase — the swipe decoder cases its word to match. */
+    val isShifted: Boolean get() = shifted
+
     fun setShifted(value: Boolean) {
         if (capsLock) return            // caps lock overrides sentence-case auto-shift
         if (shifted != value) {
@@ -832,6 +1007,11 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun tap() = performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 
+    /** How far the finger must travel before a drag is considered a word trace. */
+    private val traceStartDist = dpf(22)
+    /** Minimum spacing between recorded trace points. */
+    private val traceMinStep = dpf(5)
+
     private val DOUBLE_TAP_MS = 300L
     private val BACKSPACE_INITIAL_DELAY_MS = 400L   // pause before key-repeat kicks in
     private val BACKSPACE_CHAR_INTERVAL_MS = 95L    // per-character repeat rate
@@ -841,4 +1021,10 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun dpf(v: Int): Float = v * resources.displayMetrics.density
     private fun spf(v: Int): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics)
+
+    private companion object {
+        /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
+         *  a guard against a finger held down for a very long time, not a normal limit. */
+        const val MAX_TRACE_POINTS = 192
+    }
 }

@@ -7,28 +7,49 @@ import android.inputmethodservice.InputMethodService
 import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.view.textservice.SentenceSuggestionsInfo
 import android.view.textservice.SpellCheckerSession
 import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
 import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
+import app.lightphonekeyboard.text.KeyGrid
 import java.util.Locale
 
 /**
  * The system keyboard. Once enabled + selected as default, it appears in every text field on the
  * phone. Keystrokes from [LightKeyboardView] are applied to the focused field via InputConnection.
  *
- * Optional word-level autocorrect (toggle in [SetupActivity]) runs on top: as you type a word we ask
- * the device's own spell checker ([SpellCheckerSession] → the phone's built-in dictionary) about it,
- * and when the word is finished (space / punctuation / enter) we swap in the suggested fix. Case is
- * preserved, and the first backspace after a correction reverts it.
+ * Two optional layers sit on top, both toggled in [SetupActivity] and both driven by the bundled word
+ * list in [TextEngine]:
+ *
+ *  - **Autocorrect.** When a tapped word is finished (space / punctuation / enter) it is looked up in
+ *    the dictionary, and if it isn't a word the nearest plausible one replaces it — see
+ *    [app.lightphonekeyboard.text.Corrector] for how "nearest" is judged. Case is preserved, and the
+ *    first backspace afterwards reverts the change. This used to ask the phone's own
+ *    [SpellCheckerSession] instead, which LightOS does not ship, so it silently corrected nothing;
+ *    that path is still here as a fallback for the case where the bundled dictionary won't load.
+ *  - **Swipe typing.** A traced path arrives as [onGesture], is decoded to a word, and is committed
+ *    with a trailing space. Backspace immediately afterwards cycles through the runner-up readings of
+ *    the same trace instead of deleting — which is how the keyboard offers alternatives without a
+ *    suggestion bar, keeping the LightOS look untouched.
  */
 class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellCheckerSessionListener {
 
     private var keyboard: LightKeyboardView? = null
 
     private val dictation by lazy { VoiceDictation(this) }
+
+    /** The bundled dictionary plus the corrector and swipe decoder built on it. Loads off-thread. */
+    private val engine by lazy { TextEngine(this) }
+
+    // Swipe typing: what the last gesture committed, and the runner-up words it could also have been.
+    // While these are set, backspace cycles the alternatives rather than deleting (see [cycleGesture]).
+    private var gestureAlternates: List<String>? = null
+    private var gestureIndex = 0
+    private var gestureCommitted: String? = null
+    private var gestureCapitalized = false
 
     private var spell: SpellCheckerSession? = null
     private val corrections = HashMap<String, String?>()   // word -> fix (null = checked, no fix)
@@ -49,6 +70,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onCreate() {
         super.onCreate()
+        engine.prepare()
         initSpell()
         if (Prefs.voiceEnabled(this)) dictation.prepare()   // warm the model if voice is on (and downloaded)
     }
@@ -79,6 +101,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         corrections.clear()
         pending.clear()
         clearUndo()
+        clearGesture()
         if (spell == null) initSpell()
         updateShift()
     }
@@ -120,6 +143,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val ic = currentInputConnection ?: return
         lateWord = null                    // any new input invalidates a pending late-correction
         lateTerminator = null
+        clearGesture()                     // typing anything ends the swipe-alternatives window
         if (s.length == 1 && isWordChar(s[0])) {
             clearUndo()
             ic.commitText(s, 1)
@@ -135,7 +159,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         }
         // A word terminator: try to fix the word, then commit [s].
         val original = if (autocorrectOn()) trailingWord() else ""
-        val fix = if (original.length >= 2) corrections[original] else null
+        val fix = fixFor(original)
         if (fix != null && !fix.equals(original, ignoreCase = true)) {
             val cased = applyCase(original, fix)
             ic.beginBatchEdit()
@@ -148,8 +172,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         } else {
             clearUndo()
             ic.commitText(s, 1)
-            // The check may not have returned yet; remember the word so a late result can still fix it.
-            if (autocorrectOn() && original.length >= 2 && !corrections.containsKey(original)) {
+            // Only the asynchronous spell-checker path can produce a late answer. When the bundled
+            // dictionary is doing the work, fixFor() has already decided and there is nothing to wait
+            // for — arming a late fix here would let the system checker overrule that decision a
+            // moment later, rewriting a word the user had already seen settle.
+            if (autocorrectOn() && !engine.ready && original.length >= 2 &&
+                !corrections.containsKey(original)
+            ) {
                 lateWord = original
                 lateTerminator = s
             }
@@ -158,6 +187,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onBackspace() {
         val ic = currentInputConnection ?: return
+        if (cycleGesture(ic)) return
         val from = undoFrom
         val to = undoTo
         if (from != null && to != null) {
@@ -182,6 +212,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     override fun onBackspaceWord() {
         val ic = currentInputConnection ?: return
         clearUndo()
+        clearGesture()
         val selected = ic.getSelectedText(0)
         if (!selected.isNullOrEmpty()) { ic.commitText("", 1); return }
         val before = ic.getTextBeforeCursor(64, 0) ?: ""
@@ -206,10 +237,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onEnter() {
         val ic = currentInputConnection ?: return
+        clearGesture()
         // Fix the last word before firing the action / newline.
         if (autocorrectOn()) {
             val original = trailingWord()
-            val fix = if (original.length >= 2) corrections[original] else null
+            val fix = fixFor(original)
             if (fix != null && !fix.equals(original, ignoreCase = true)) {
                 val cased = applyCase(original, fix)
                 ic.beginBatchEdit()
@@ -234,6 +266,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     override fun onDoubleSpace() {
         val ic = currentInputConnection ?: return
         clearUndo()
+        clearGesture()
         val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
         if (before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()) {
             ic.beginBatchEdit()
@@ -275,6 +308,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
                 // Each finished segment commits to the field; dictation keeps going across pauses.
                 onSegment = { text ->
                     clearUndo()
+                    clearGesture()
                     currentInputConnection?.commitText(spacedDictation(text), 1)
                 },
                 onError = { msg ->
@@ -324,6 +358,84 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         runCatching { sendBroadcast(Intent(ACTION_IME_VISIBILITY).putExtra(EXTRA_VISIBLE, visible)) }
     }
 
+    // ------------------------------------------------------------------ swipe typing
+
+    override fun onKeyGrid(grid: KeyGrid) {
+        // The view has laid out; tell the corrector and the decoder where the letters actually are.
+        engine.setKeyGrid(grid)
+    }
+
+    /**
+     * A finished trace. Decode it, commit the best reading plus a trailing space, and remember the
+     * runner-ups so backspace can cycle them.
+     *
+     * The trailing space is what makes swiping faster than tapping — otherwise every word still needs
+     * a deliberate space afterwards. [needsLeadingSpace] handles the other side, so swiping two words
+     * in a row doesn't fuse them, and swiping mid-sentence doesn't double a space already there.
+     *
+     * If nothing decodes, nothing is committed. The letter the traced key typed on touch-down has
+     * already been retracted by the view, so a rejected gesture leaves the field exactly as it was —
+     * the right outcome for a stray drag.
+     */
+    override fun onGesture(xs: FloatArray, ys: FloatArray, count: Int) {
+        val ic = currentInputConnection ?: return
+        if (!Prefs.swipeTyping(this)) return
+        val decoder = engine.decoder ?: return          // dictionary still loading, or unavailable
+        val words = decoder.decode(xs, ys, count, GESTURE_ALTERNATES)
+        if (words.isEmpty()) return
+        clearUndo()
+        gestureCapitalized = keyboard?.isShifted == true
+        val text = gestureText(words[0])
+        ic.commitText(text, 1)
+        gestureAlternates = words
+        gestureIndex = 0
+        gestureCommitted = text
+    }
+
+    /**
+     * Backspace straight after a swipe: replace the committed word with the trace's next-best reading
+     * instead of deleting a character. This is how alternatives are offered without a suggestion bar.
+     *
+     * Bails out — letting backspace delete normally — once the readings are exhausted, or if the text
+     * at the cursor is no longer what we committed (the user moved the caret, or another app rewrote
+     * the field), so we never overwrite something we didn't put there.
+     */
+    private fun cycleGesture(ic: InputConnection): Boolean {
+        val alts = gestureAlternates ?: return false
+        val committed = gestureCommitted ?: return false
+        if (gestureIndex + 1 >= alts.size) { clearGesture(); return false }
+        if (ic.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
+            clearGesture()
+            return false
+        }
+        gestureIndex++
+        val next = gestureText(alts[gestureIndex])
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(committed.length, 0)
+        ic.commitText(next, 1)
+        ic.endBatchEdit()
+        gestureCommitted = next
+        return true
+    }
+
+    /** A decoded word dressed for insertion: leading space if needed, the user's case, trailing space. */
+    private fun gestureText(word: String): String {
+        val cased = if (gestureCapitalized) word.replaceFirstChar { it.uppercaseChar() } else word
+        return if (needsLeadingSpace()) " $cased " else "$cased "
+    }
+
+    /** True when the character before the cursor is neither absent nor whitespace. */
+    private fun needsLeadingSpace(): Boolean {
+        val before = currentInputConnection?.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+        return before.isNotEmpty() && !before.last().isWhitespace()
+    }
+
+    private fun clearGesture() {
+        gestureAlternates = null
+        gestureCommitted = null
+        gestureIndex = 0
+    }
+
     // ------------------------------------------------------------------ spell checking
 
     private fun initSpell() {
@@ -335,9 +447,24 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     private fun autocorrectOn(): Boolean = Prefs.autocorrect(this)
 
+    /**
+     * The replacement for a just-finished word, or null to leave it alone.
+     *
+     * The bundled dictionary answers if it has loaded — synchronously, which is why this can run at the
+     * moment the word ends rather than needing a result warmed up in advance. Otherwise it falls back
+     * to whatever the phone's spell checker had to say, which is the pre-existing path and on LightOS
+     * is normally nothing at all.
+     */
+    private fun fixFor(word: String): String? {
+        if (word.length < 2) return null
+        engine.corrector?.let { return it.correct(word) }
+        return corrections[word]
+    }
+
     /** Ask the device spell checker about [word] (once); the answer lands in [corrections]. */
     private fun requestCheck(word: String) {
         if (!autocorrectOn()) return
+        if (engine.ready) return   // the bundled dictionary answers synchronously; no need to warm this
         val s = spell ?: return
         if (word.length < 2 || word.length > 32) return
         if (corrections.containsKey(word)) return
@@ -427,5 +554,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         const val EXTRA_VISIBLE = "visible"
         /** Window of text to inspect when deleting the last grapheme cluster (covers long emoji). */
         private const val GRAPHEME_LOOKBACK = 16
+        /** How many readings of one trace to keep, i.e. how many times backspace can cycle. */
+        private const val GESTURE_ALTERNATES = 4
     }
 }

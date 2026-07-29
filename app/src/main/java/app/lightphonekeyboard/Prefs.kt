@@ -6,6 +6,7 @@ import android.content.Context
 object Prefs {
     private const val FILE = "light_keyboard_prefs"
     private const val KEY_AUTOCORRECT = "autocorrect"
+    private const val KEY_SWIPE = "swipe_typing"
     private const val KEY_VOICE = "voice_enabled"
     private const val KEY_COMPACT = "compact_mode"
     private const val KEY_AUTO_PERIOD = "auto_period"
@@ -28,11 +29,17 @@ object Prefs {
 
     private fun prefs(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
-    /** Word-level autocorrect using the device's spell checker. On by default. */
+    /** Word-level autocorrect against the bundled dictionary. On by default. */
     fun autocorrect(c: Context): Boolean = prefs(c).getBoolean(KEY_AUTOCORRECT, true)
 
     fun setAutocorrect(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_AUTOCORRECT, value).apply()
+
+    /** Swipe typing: drag across the letters to write a whole word. On by default. */
+    fun swipeTyping(c: Context): Boolean = prefs(c).getBoolean(KEY_SWIPE, true)
+
+    fun setSwipeTyping(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_SWIPE, value).apply()
 
     /** Keyboard height: one of [HEIGHT_SHORT] / [HEIGHT_MEDIUM] / [HEIGHT_TALL]. Defaults to Medium;
      *  migrates the legacy Compact toggle (compact_mode = true) to Short. */
