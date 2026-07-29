@@ -1,12 +1,23 @@
-# Build and test on every push. The release workflow only runs on tags, so without this a broken
-# commit sits on the default branch unnoticed until someone cuts a release.
+# Test, build, and publish a signed APK — on every push to main.
+#
+# Releasing per push rather than per tag is deliberate: tagging is a separate step that is easy to
+# forget, and a release that never gets cut is a fix that never reaches the phone. The trade is that
+# main has to stay green, which is what the test job below is for.
 name: Build
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Two pushes in quick succession would otherwise race to create the same release.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -24,13 +35,96 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Decode the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::KEYSTORE_BASE64 is not set. Every build has to be signed with the same key"
+            echo "::error::or Android refuses the update; there is no unsigned fallback on purpose."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Version from the run number
+        id: version
+        run: |
+          # versionCode must strictly increase for Android to accept an update; the run number does
+          # that for free. versionName is kept equal to the release tag so Obtainium compares like
+          # with like — a mismatch there shows as a permanent phantom "update available".
+          echo "name=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android
-      # types precisely so it can be tested here, on real data, rather than only on a phone.
+      # types precisely so it can be tested here, on the real 63k-word dictionary, rather than only
+      # on a phone. A failure here stops the release.
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest
 
+      - name: Build signed release APK
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: >-
+          ./gradlew :app:assembleRelease
+          -PappVersionName=${{ steps.version.outputs.name }}
+          -PappVersionCode=${{ steps.version.outputs.code }}
+
+      - name: Check the signing certificate hasn't changed
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          # The output line reads "Signer #1 certificate SHA-256 digest: <hex>", so splitting on
+          # ': ' returns the label rather than the hex — strip everything up to the digest instead.
+          ACTUAL=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk \
+            | grep -i 'SHA-256 digest' | head -1 | sed -E 's/.*[Dd]igest:[[:space:]]*//' | tr -d ':' | tr 'A-Z' 'a-z')
+          EXPECTED=$(tr -d '[:space:]' < signing-fingerprint.txt | tr 'A-Z' 'a-z')
+          echo "expected $EXPECTED"
+          echo "actual   $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Signing certificate changed. Android identifies an app by (package, cert),"
+            echo "::error::so shipping this would break updates for anyone who already has the app."
+            exit 1
+          fi
+
+      - name: Stage the release APK
+        id: stage
+        run: |
+          mkdir -p dist
+          # Exactly ONE apk per release. Publishing more than one lets Obtainium pick the wrong asset.
+          cp app/build/outputs/apk/release/app-release.apk \
+             "dist/LightKeyboard-v${{ steps.version.outputs.name }}.apk"
+          ls -la dist
+
+      # Debug stays a workflow artifact and is never attached to a release, for the same reason.
       - name: Build debug APK
+        if: github.event_name == 'pull_request'
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:assembleDebug
+
+      - name: Upload debug APK
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.name }}
+          name: v${{ steps.version.outputs.name }}
+          files: dist/LightKeyboard-*.apk
+          make_latest: true
+          generate_release_notes: true
 
       - name: Upload test report on failure
         if: failure()

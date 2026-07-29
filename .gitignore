@@ -16,8 +16,12 @@ out/
 .kotlin/
 
 # Local configuration (SDK path, signing, secrets)
+# The release signing key stays OUT of the repository — it lives as a base64 GitHub Actions secret
+# (KEYSTORE_BASE64) that CI decodes to a temp file. Only its certificate fingerprint is committed, in
+# signing-fingerprint.txt, so CI can fail if the key ever changes. See .github/workflows/build.yml.
 local.properties
 keystore/
+keystore.properties
 *.jks
 *.keystore
 secrets.properties

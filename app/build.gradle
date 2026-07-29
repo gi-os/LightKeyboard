@@ -3,6 +3,20 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Resolved before the android block so both the signingConfig and the requireSigningKey task can see
+// it. The key itself is never in the repository — CI decodes it from the KEYSTORE_BASE64 secret; see
+// .github/workflows/build.yml, and the "Releases and signing" section of the README.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def resolvedKeystore = {
+    def path = System.getenv('KEYSTORE_FILE') ?: keystoreProps['storeFile']
+    path ? rootProject.file(path) : null
+}()
+def haveKeystore = resolvedKeystore != null && resolvedKeystore.exists()
+
 android {
     namespace 'app.lightphonekeyboard'
     compileSdk 35
@@ -16,8 +30,12 @@ android {
         // tag against the stale embedded version and shows a phantom "update available" forever —
         // every v0.1.x release shipped embedded as 0.1.0, which is exactly that bug. The literals
         // below are only the fallback for local/debug builds, which have no tag.
+        // CI passes these in: versionCode is the workflow run number (strictly increasing, so Android
+        // always accepts the update) and versionName is 1.0.<run>, which equals the release tag. Keeping
+        // them equal is what stops Obtainium comparing the tag against a stale embedded version and
+        // showing a phantom "update available" forever.
         versionCode ((project.findProperty('appVersionCode') ?: '1').toString().toInteger())
-        versionName (project.findProperty('appVersionName') ?: '0.1.0')
+        versionName (project.findProperty('appVersionName') ?: '1.0.0')
         resConfigs "en"
 
         // Light Phone 3 is arm64 — ship only its native libs (Vosk .so) to keep the APK small.
@@ -30,25 +48,46 @@ android {
     }
     kotlinOptions { jvmTarget = '17' }
 
-    // Release signing is supplied via env vars (set in CI from repo secrets). When they're absent
-    // — e.g. local builds — the config stays empty and release APKs are simply unsigned; debug
-    // builds are what development uses, so no keystore is needed to work on the app.
+    // One stable signing key, for BOTH build types.
+    //
+    // Android identifies an app by (packageName, signing certificate), so every build that could ever
+    // replace another has to carry the same certificate. Two ways to get this wrong, and this file used
+    // to manage both:
+    //
+    //   - Letting `assembleDebug` fall back to the default ~/.android/debug.keystore. A fresh CI runner
+    //     generates that from scratch on every job, so consecutive builds carry different certificates
+    //     and Android rejects the update as invalid.
+    //   - Gating the release signingConfig on an env var and silently producing an UNSIGNED apk when it
+    //     is absent. An unsigned apk cannot install at all, and nothing in the build log says so.
+    //
+    // The key itself is not in the repository — it is a base64 repo secret that CI decodes to a temp
+    // file (see .github/workflows/build.yml). Locally, point KEYSTORE_FILE at your copy, or drop a
+    // keystore.properties in the project root with storeFile/storePassword/keyAlias/keyPassword.
     signingConfigs {
         release {
-            def storePath = System.getenv('KEYSTORE_FILE')
-            if (storePath) {
-                storeFile file(storePath)
-                storePassword System.getenv('KEYSTORE_PASSWORD')
-                keyAlias System.getenv('KEY_ALIAS')
-                keyPassword System.getenv('KEY_PASSWORD')
+            if (haveKeystore) {
+                storeFile resolvedKeystore
+                storePassword System.getenv('KEYSTORE_PASSWORD') ?: keystoreProps['storePassword']
+                keyAlias System.getenv('KEY_ALIAS') ?: keystoreProps['keyAlias']
+                keyPassword System.getenv('KEY_PASSWORD') ?: keystoreProps['keyPassword']
             }
         }
     }
 
     buildTypes {
-        debug { applicationIdSuffix '.debug' }
+        // Debug shares the release key when one is available — and keeps the same applicationId, with
+        // no `.debug` suffix — so `adb install -r` replaces an installed release in place rather than
+        // leaving a second Light Keyboard in the input-method list. Without a key it falls back to the
+        // normal debug signing, so anyone can still clone and build.
+        debug {
+            if (haveKeystore) signingConfig signingConfigs.release
+        }
         release {
-            signingConfig System.getenv('KEYSTORE_FILE') ? signingConfigs.release : null
+            // Signing is mandatory here, enforced by the requireSigningKey task below rather than by a
+            // throw at this point: throwing during configuration fails EVERY gradle invocation without
+            // a key, including `assembleDebug` and the unit tests, which would stop anyone cloning the
+            // repo from building it at all.
+            signingConfig signingConfigs.release
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -56,6 +95,22 @@ android {
     }
     lint { abortOnError false }
 }
+
+// Refuse to assemble a release without a signing key, instead of quietly emitting an unsigned APK.
+// An unsigned APK looks exactly like a good one — same size, same name, builds green — and only reveals
+// itself by refusing to install, with no useful error. Upstream shipped that state for 11 builds.
+tasks.register('requireSigningKey') {
+    doLast {
+        if (!haveKeystore) {
+            throw new GradleException(
+                "No signing key: set KEYSTORE_FILE (+ KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD) " +
+                "or create keystore.properties. Release builds are never left unsigned, because an " +
+                "unsigned APK cannot be installed at all.")
+        }
+    }
+}
+
+tasks.matching { it.name == 'assembleRelease' }.configureEach { dependsOn 'requireSigningKey' }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'

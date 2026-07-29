@@ -80,3 +80,34 @@ Light. The original is [adam-weber/light-keyboard](https://github.com/adam-weber
 ## License
 
 [MIT](LICENSE). Do what you like with it.
+
+## Releases and signing
+
+Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0.<n>` release —
+see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks it up on its own.
+
+The signing key is a repo secret (`KEYSTORE_BASE64`), not a file in the repository. Only its
+certificate fingerprint is committed, in `signing-fingerprint.txt`, and CI fails if a build's
+certificate doesn't match it. That guard exists because Android identifies an app by
+`(packageName, certificate)`: change the certificate and every existing install stops being
+upgradeable, which surfaces only as an unhelpful `Failure: Invalid` at install time.
+
+Release builds are never left unsigned — the Gradle build fails outright with no key, rather than
+producing an APK that looks fine and then refuses to install.
+
+To build a signed APK yourself, either set `KEYSTORE_FILE`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` and
+`KEY_PASSWORD`, or drop a `keystore.properties` in the project root:
+
+```properties
+storeFile=/path/to/your.jks
+storePassword=…
+keyAlias=…
+keyPassword=…
+```
+
+Debug builds share that key and the same `applicationId`, so `adb install -r` replaces an installed
+release in place instead of leaving a second Light Keyboard in the input-method list. Without a key,
+debug still builds with ordinary debug signing.
+
+> Coming from the upstream app, or from a build made before this key existed? Android will refuse the
+> update because the certificate differs. Uninstall the old one first.
