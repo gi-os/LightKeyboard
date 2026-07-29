@@ -96,6 +96,24 @@ class SuggesterTest {
     }
 
     @Test
+    fun `does not offer the literal while a word is still being typed`() {
+        val s = suggester() ?: return
+        // The one that keeps the strip quiet: every unfinished word is "unknown", so without the
+        // going-nowhere test, typing "keyboard" would offer to add "k", "ke", "key" and "keyb".
+        for (p in listOf("ke", "key", "keyb", "keyboa", "tomo", "becau", "lup", "recei")) {
+            assertEquals("literal offered mid-word for $p", null, s.literalFor(p))
+        }
+    }
+
+    @Test
+    fun `offers the literal as soon as the prefix stops going anywhere`() {
+        val s = suggester() ?: return
+        // "lup" still reaches lupus/lupine, so nothing; "lupo" reaches nothing, so the slot appears.
+        assertEquals(null, s.literalFor("Lup"))
+        assertEquals("Lupo", s.literalFor("Lupo"))
+    }
+
+    @Test
     fun `does not offer a literal the personal list would refuse`() {
         val s = suggester() ?: return
         // UserWords rejects these, so a slot that claimed to add them would silently do nothing.
@@ -125,8 +143,10 @@ class SuggesterTest {
     }
 
     @Test
-    fun `strip is all suggestions when the word is already known`() {
+    fun `strip is all suggestions while a word is still being typed`() {
         val s = suggester() ?: return
+        // "keyb" is not a word, but it is going somewhere, so the slots are completions only — this is
+        // the common case while typing and the strip should look no different than before.
         val strip = s.stripFor("keyb", Suggester.SLOTS)
         assertTrue("no suggestions for keyb", strip.isNotEmpty())
         assertTrue("unexpected literal in $strip", strip.none { it.literal })

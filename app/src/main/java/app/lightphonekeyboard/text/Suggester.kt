@@ -72,19 +72,33 @@ class Suggester(
      *  - a word [UserWords] would refuse anyway (too short, digits, punctuation), because the slot's
      *    whole purpose is to add it and a slot that silently fails to is worse than no slot;
      *  - a word the keyboard already knows. Nothing to learn, nothing about to be corrected away, and
-     *    quoting a correctly spelled word makes the strip look like it is second-guessing you.
+     *    quoting a correctly spelled word makes the strip look like it is second-guessing you;
+     *  - **a prefix that is still going somewhere.** This is the one that matters most. Every unfinished
+     *    word is "unknown" — `k`, `ke`, `key`, `keyb` are none of them words — so without this the strip
+     *    would offer to add each of them to your dictionary as you typed `keyboard`. If the dictionary
+     *    can still extend what you have, you are mid-word and not asking to keep anything.
      *
-     * That last rule is narrower than iOS, which shows the literal whenever *any* autocorrection is
-     * pending, including one real word being swapped for another. This covers the case the user
-     * actually needs — names and jargon the dictionary has never heard of — without putting quotes on
-     * screen for every ordinary word.
+     * "Going nowhere" is the same test the corrections above use, and it is what makes the slot appear
+     * at the moment it is useful: `lup` completes to lupus and lupine so nothing is offered, then `lupo`
+     * completes to nothing and `"Lupo"` appears.
+     *
+     * Still narrower than iOS, which quotes the literal whenever *any* correction is pending, including
+     * one real word being swapped for another. This covers the case that actually hurts — names and
+     * jargon absent from the word list — without quoting ordinary words.
      */
     fun literalFor(prefix: String): String? {
         if (prefix.isEmpty()) return null
         if (!UserWords.isAcceptable(prefix)) return null
-        if (dict.contains(prefix.lowercase()) || userWords.contains(prefix)) return null
+        val p = prefix.lowercase()
+        if (dict.contains(p) || userWords.contains(prefix)) return null
+        if (hasCompletions(p)) return null
         return prefix
     }
+
+    /** Whether anything in either list extends [p]. Asks for one, since only emptiness matters. */
+    private fun hasCompletions(p: String): Boolean =
+        dict.completions(p, 1).isNotEmpty() ||
+            userWords.dictionary?.completions(p, 1)?.isNotEmpty() == true
 
     /**
      * The whole strip for a word being typed: the literal first when there is one, then the ordinary
