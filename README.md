@@ -6,7 +6,7 @@ bundled-dictionary autocorrect.
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.0.9** (tag `v1.0.9`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.0.11** (tag `v1.0.11`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -149,6 +149,20 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v1.0.11** (2026-07-31) — **Two-letter words can be swiped.** "of", "to", "in", "is", "it" and "on"
+  are all in the twenty commonest words in English, and none of them could be swiped at all: the
+  decoder's dictionary scan began at three letters, so a stroke from *o* to *f* came out "off", *t* to
+  *o* came out "top", *b* to *y* came out "buy". Between neighbouring keys it was worse — "we", "as",
+  "ok" produced nothing whatsoever, because the whole stroke was shorter than the path length the
+  decoder needed before it would treat a drag as a gesture, and the first letter had already been
+  retracted by then. Two-letter words are now scored like any other, with two things keeping them
+  honest: a stroke that begins and ends on the same key is still a tap (a drifted tap can never become a
+  word), and a two-letter reading has to beat the field by a margin rather than tie it, because its
+  ideal path is a straight line and a straight line fits almost anything. Scoring also gained a length
+  term — a candidate is charged for distance the finger travelled that its own path can't account for,
+  which is what tells "here" from "he" — and the trace now records where the finger lifted, so a quick
+  flick between two keys isn't thrown away for having reported too few points. Single taps are untouched:
+  "a" and "I" are still typed, never swiped.
 - **v1.0.9** (2026-07-31) — **Suggestions ranked against the sentence, and a strip you can edit.**
   Three things:
   - A bundled word-pair table (`res/raw/bigrams.bin`, 180,000 pairs) reorders the candidates the strip,

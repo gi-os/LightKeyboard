@@ -93,8 +93,12 @@ class GestureDecoderTest {
     private fun benchmark(sigma: Float, step: Float, round: Float, seed: Long): Pair<Double, Double> {
         val dict = TestDictionary.bundled()!!
         val d = GestureDecoder(dict, grid)
+        // Three letters and up, not [GestureDecoder.MIN_WORD]: the rates below have been measured
+        // against this same list since the decoder was written, and folding two-letter words into it
+        // would move the number for a reason that has nothing to do with a regression. They get their
+        // own test.
         val common = (0 until dict.size)
-            .filter { dict.isAlphaOnly(it) && dict.length(it) >= GestureDecoder.MIN_WORD }
+            .filter { dict.isAlphaOnly(it) && dict.length(it) >= 3 }
             .sortedByDescending { dict.logFreq(it) }
             .take(250)
             .map { dict.word(it) }
@@ -183,7 +187,98 @@ class GestureDecoderTest {
         val xs = floatArrayOf(4f, 4.1f, 4.15f, 4.2f)
         val ys = floatArrayOf(1f, 1.05f, 1.1f, 1.05f)
         assertEquals(emptyList<String>(), d.decode(xs, ys, xs.size, 4))
-        assertEquals(emptyList<String>(), d.decode(xs, ys, 2, 4))   // fewer points than a path needs
+        assertEquals(emptyList<String>(), d.decode(xs, ys, 1, 4))   // fewer points than a path needs
+        // Drift far enough to leave the key and it is still a tap, because both ends are on the same
+        // key. This is the test the old three-letter floor was standing in for.
+        for (c in listOf('f', 'w', 'a', 'o', 'k', 's')) {
+            val dx = FloatArray(6) { grid.x(c) + it * 0.09f }
+            val dy = FloatArray(6) { grid.y(c) }
+            assertEquals("drift on $c became a word", emptyList<String>(), d.decode(dx, dy, 6, 4))
+        }
+    }
+
+    /**
+     * The reported bug: two-letter words never came out. Six of the twenty commonest words in English
+     * are two letters long, so this is the hot path, not a corner of one.
+     *
+     * Both geometries are covered on purpose. "we", "as" and "ok" are strokes between neighbouring
+     * keys, barely longer than a key — those used to decode to *nothing*, because the path-length floor
+     * sat above them and the first letter had already been retracted. "of", "by", "is" and "so" run
+     * right across the keyboard and used to decode to a three-letter word instead ("off", "buy", "its",
+     * "shop"), because the dictionary scan started at length three.
+     */
+    @Test
+    fun `decodes two-letter words`() {
+        val d = decoder() ?: return
+        val words = listOf(
+            "of", "to", "in", "is", "it", "on", "we", "or", "by", "up", "as", "my", "be",
+            "no", "so", "go", "ok", "me", "he", "us", "an", "if", "do", "at", "am", "ah",
+        )
+        var top1 = 0
+        val missed = ArrayList<String>()
+        for (w in words) {
+            val (xs, ys, n) = trace(w, Random(1), sigma = 0.12f)
+            val got = d.decode(xs, ys, n, 4)
+            if (got.firstOrNull() == w) top1++
+            if (w !in got) missed.add("$w -> $got")
+        }
+        // Measured: 23 of 26 first, all 26 reachable. The three that lose ("go" to "to", "ok" to "on",
+        // "if" to "of") are pairs whose ideal paths genuinely coincide, the commoner word wins, and
+        // backspace or the word before them settles it — the same trade the decoder has always made.
+        assertTrue("only $top1 of ${words.size} decoded first", top1 >= 22)
+        assertTrue("unreachable: $missed", missed.isEmpty())
+    }
+
+    /**
+     * A short flick reports very few samples — the view records the touch-down, whatever MOVEs arrive,
+     * and the lift, and between two neighbouring keys that can be two points in total. The decoder has
+     * to read a word out of that, because "we" and "of" are exactly the strokes that produce it.
+     */
+    @Test
+    fun `decodes a stroke reported as only its two ends`() {
+        val d = decoder() ?: return
+        for (w in listOf("we", "of", "to", "by")) {
+            // Both ends short of the key centre, the way a finger actually lands and lifts.
+            val xs = floatArrayOf(grid.x(w[0]) + 0.10f, grid.x(w[1]) - 0.10f)
+            val ys = floatArrayOf(grid.y(w[0]), grid.y(w[1]))
+            val got = d.decode(xs, ys, 2, 4)
+            assertEquals("two-point $w", w, got.firstOrNull())
+        }
+    }
+
+    /** Three-letter words the two-letter band could plausibly have stolen. */
+    @Test
+    fun `still decodes the three-letter words it always did`() {
+        val d = decoder() ?: return
+        for (w in listOf("the", "and", "you", "for", "not", "but", "can", "how", "our", "its")) {
+            val (xs, ys, n) = trace(w, Random(5), sigma = 0.12f)
+            val got = d.decode(xs, ys, n, 4)
+            assertTrue("$w -> $got", w in got)
+        }
+    }
+
+    /**
+     * Context has to reach two-letter candidates as well, and it does — which matters more here than
+     * anywhere, because these are the words whose paths coincide. Nothing in the ranker is
+     * length-aware; the test exists to keep it that way.
+     */
+    @Test
+    fun `the preceding word settles a two-letter reading`() {
+        val d = decoder() ?: return
+        d.context = TestContext.bundled() ?: return
+        val plain = decoder()!!
+        for ((left, w) in listOf("can" to "go", "will" to "go", "even" to "if", "only" to "if")) {
+            val (xs, ys, n) = trace(w, Random(1), sigma = 0.12f)
+            val before = plain.decode(xs, ys, n, 4)
+            val after = d.decode(xs, ys, n, 4, WordContext(left = left))
+            assertEquals("'$left $w' was $before, ranked $after", w, after.firstOrNull())
+        }
+        // And it must not unseat a two-letter word that was already right.
+        for ((left, w) in listOf("kind" to "of", "want" to "to", "one" to "of")) {
+            val (xs, ys, n) = trace(w, Random(1), sigma = 0.12f)
+            val got = d.decode(xs, ys, n, 4, WordContext(left = left))
+            assertEquals("'$left $w'", w, got.firstOrNull())
+        }
     }
 
     @Test
@@ -212,6 +307,8 @@ class GestureDecoderTest {
         for (w in words) {
             val (xs, ys, n) = trace(w, rng, sigma = 0.15f)
             for (g in d.decode(xs, ys, n, 4)) {
+                // Never a bare letter: "a" and "I" are taps, and a gesture that could return one would
+                // make every drifted tap a coin toss.
                 assertTrue("$g is shorter than a gesture word", g.length >= GestureDecoder.MIN_WORD)
                 assertTrue("$g isn't pure a-z", g.all { it in 'a'..'z' })
             }

@@ -11,18 +11,18 @@ import kotlin.math.sqrt
  * through its letters' key centres. Recognising a gesture is then asking which ideal path the traced
  * one most resembles. Three measurements are combined, because each covers the others' blind spots:
  *
- *  - The **alignment channel** ([alignCost]) walks the traced samples against the word's letters in
- *    order, letting the trace linger on a letter but never go back, and charges the distance from each
- *    sample to the letter it lands on. This is the discriminating one: it asks whether the finger
- *    actually went *through these keys in this sequence*, which is the question that matters. A plain
- *    average distance between the two paths — which is all this had at first — cannot answer it, and
- *    happily matched "page" to "posts" because both sweep from the right side of the keyboard to the
- *    left and back.
+ *  - The **location channel** compares the two paths sample by sample where they were actually drawn.
+ *    It is also the cheap rejection test: a candidate whose mean per-sample miss is hopeless is
+ *    dropped before anything else is computed.
  *  - The **shape channel** compares the paths after centring and scaling both, so it sees the form of
  *    the stroke and ignores where it was drawn. This is what forgives a gesture traced small, or
- *    drifting off toward one side, which the alignment channel alone punishes.
- *  - A cheap **mean-distance** pass runs first, purely to reject candidates nowhere near the trace
- *    before paying for the alignment DP.
+ *    drifting off toward one side, which the location channel alone punishes.
+ *  - The **length channel** charges a candidate for the distance the finger travelled that its own
+ *    ideal path cannot account for. Only the excess is charged, never the shortfall: a thumb cuts
+ *    corners and traces small, so travelling *less* than the ideal path is ordinary, while travelling
+ *    a whole key further than the candidate explains means the finger went somewhere the candidate
+ *    doesn't. It is what separates "here" from "he" and "use" from "us" — pairs the other two channels
+ *    barely distinguish, because the shorter word's straight line lies along the longer word's path.
  *
  * A frequency prior settles the rest: when two words really do have near-identical paths ("for"/"fir",
  * "sun"/"sum") the common one wins, which is right often enough that backspacing to cycle the
@@ -78,7 +78,7 @@ class GestureDecoder(
         limit: Int = 4,
         ctx: WordContext = WordContext.NONE,
     ): List<String> {
-        if (count < 3) return emptyList()
+        if (count < 2) return emptyList()
         val pathLength = resample(px, py, count, ux, uy)
         if (pathLength < MIN_PATH_LENGTH) return emptyList()
         normalize(ux, uy, sx, sy)
@@ -93,10 +93,18 @@ class GestureDecoder(
         var corridor = 0
         for (i in 0 until SAMPLES) corridor = corridor or g.lettersNear(ux[i], uy[i], CORRIDOR_RADIUS)
 
+        // Whether the stroke went from one key to a different one, which is the whole of what separates
+        // "of" from a tap on o whose finger wandered. Nearest key, not the end masks, because those are
+        // deliberately generous (1.6 key units) and a drifted tap satisfies both of them with the same
+        // letter. Only two-letter readings are gated on it: a three-letter word has a corner to prove
+        // itself with, and a stroke this short has nothing but its two ends.
+        val twoKeys = g.nearest(ux[0], uy[0]) != g.nearest(ux[SAMPLES - 1], uy[SAMPLES - 1])
+        val shortest = if (twoKeys) MIN_WORD else MIN_WORD_ONE_KEY
+
         val heap = TopK(limit)
         val user = userWords
-        scan(dict, MAIN, g, startMask, endMask, corridor, heap)
-        user.dictionary?.let { scan(it, USER, g, startMask, endMask, corridor, heap) }
+        scan(dict, MAIN, g, startMask, endMask, corridor, shortest, pathLength, heap)
+        user.dictionary?.let { scan(it, USER, g, startMask, endMask, corridor, shortest, pathLength, heap) }
         // Reordered by the preceding word, which is where a swipe needs it most: near-identical traces
         // ("way"/"wag", "sun"/"sum") are settled by frequency alone, and after "on my" the corpus has an
         // opinion worth more than that. Held to the correction bound, not the strip's, because the best
@@ -114,9 +122,11 @@ class GestureDecoder(
         startMask: Int,
         endMask: Int,
         corridor: Int,
+        shortest: Int,
+        pathLength: Float,
         heap: TopK,
     ) {
-        for (i in source.lengthRange(MIN_WORD, Corrector.MAX_LENGTH)) {
+        for (i in source.lengthRange(shortest, Corrector.MAX_LENGTH)) {
             if (!source.isAlphaOnly(i)) continue                        // can't trace an apostrophe
             val len = source.length(i)
             if (bit(source.charAt(i, 0)) and startMask == 0) continue
@@ -125,14 +135,19 @@ class GestureDecoder(
 
             val n = buildTemplate(g, source, i, len)
             if (n < 2) continue
-            resample(kx, ky, n, tx, ty)
+            val templateLength = resample(kx, ky, n, tx, ty)
             val location = meanDistance(ux, uy, tx, ty)
             if (location > LOCATION_CUTOFF) continue                    // nowhere near: reject cheaply
             normalize(tx, ty, nx, ny)
             val shape = meanDistance(sx, sy, nx, ny)
             // Last, so a forgotten word costs a String only once a trace has actually landed near it.
             if (forgotten.contains(source, i)) continue
-            heap.offer(tag, i, source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape)
+            val excess = (pathLength - templateLength).coerceAtLeast(0f)
+            val shortWord = if (len == 2) SHORT_PENALTY else 0f
+            heap.offer(
+                tag, i,
+                source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess - shortWord,
+            )
         }
     }
 
@@ -285,12 +300,29 @@ class GestureDecoder(
 
         /** Points each path is resampled to. 32 is SHARK²'s figure and plenty for word-sized strokes. */
         const val SAMPLES = 32
-        /** Shortest word a gesture may produce. One letter is a tap, and two-letter strokes are so
-         *  ambiguous that allowing them mostly means stealing taps that drifted. */
-        const val MIN_WORD = 3
-        /** Below this total path length it isn't a gesture — the view uses the same figure to decide
-         *  whether a drag became a swipe at all. */
-        const val MIN_PATH_LENGTH = 1.2f
+        /**
+         * Shortest word a gesture may produce. Two, not three: "of", "to", "in", "is", "it" and "on"
+         * are all in the twenty commonest words in English, and a three-letter floor meant every one of
+         * them decoded to something else — "of" came out "off", "to" came out "top" — or, when the two
+         * keys were neighbours, to nothing at all, with the first letter already retracted.
+         *
+         * One letter stays impossible on purpose: "a" and "I" are taps, and a gesture that could return
+         * a single letter would make every drifted tap a coin toss.
+         */
+        const val MIN_WORD = 2
+        /** The floor when the stroke started and finished on the same key — see [decode]. */
+        const val MIN_WORD_ONE_KEY = 3
+        /**
+         * Below this total path length it isn't a gesture at all.
+         *
+         * It has to sit under one key unit, or two-letter strokes between neighbouring keys ("we", "as",
+         * "ok") never reach the dictionary: their whole path is the gap between two key centres, about
+         * one unit, and a finger cuts that short at both ends. The old figure was above it, which is why
+         * those words produced nothing whatsoever. This is the view's own trace-start distance (22dp of
+         * about a 40dp key), so the two thresholds now agree — below this the view would never have
+         * called the drag a swipe, and nothing that it does call a swipe is thrown away here.
+         */
+        const val MIN_PATH_LENGTH = 0.5f
 
         private const val END_RADIUS = 1.60f        // how far the first/last letter may sit from the ends
         private const val CORRIDOR_RADIUS = 1.70f   // how far off the traced path a letter may sit
@@ -302,5 +334,24 @@ class GestureDecoder(
         // Fitted against the synthetic-trace benchmark in GestureDecoderTest, not picked by eye.
         private const val W_LOCATION = 4.0f
         private const val W_SHAPE = 16.0f
+        /** Per key unit of travel the candidate's own path cannot account for — the length channel. */
+        private const val W_EXCESS = 0.5f
+
+        /**
+         * What a two-letter reading has to beat the field by, in nats.
+         *
+         * A two-letter template is a straight line between two keys, and a straight line is the one
+         * shape every stroke contains somewhere: with no corner to prove itself with, "or" fits a trace
+         * of "our" about as well as "our" does, and "of" fits "off" exactly (the repeated letter
+         * collapses, so the two templates are the same line). Frequency then hands it to the two-letter
+         * word every time, which is how allowing them at all costs three-letter accuracy.
+         *
+         * So they are allowed, but made to clear the field rather than tie it. 0.75 nats is roughly
+         * "twice as likely on frequency alone", and it is fitted, not guessed: on the synthetic-trace
+         * benchmark in GestureDecoderTest it is the largest value that still decodes 23 of the 26
+         * commonest two-letter words on the first guess, and it leaves three-letter accuracy where it
+         * was before two-letter words were scored at all.
+         */
+        private const val SHORT_PENALTY = 0.75f
     }
 }

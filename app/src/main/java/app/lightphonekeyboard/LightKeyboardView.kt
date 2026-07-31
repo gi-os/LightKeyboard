@@ -766,7 +766,10 @@ class LightKeyboardView @JvmOverloads constructor(
                     if (item != null) { tap(); listener?.onSuggestion(item) }
                     return true
                 }
-                if (tracing) finishTrace() else invalidate()
+                // The lift point is recorded before the trace is handed over: MOVE events stop arriving a
+                // frame before the finger leaves the glass, and on a two-key word the last key IS half
+                // the word — losing the end of the stroke there is losing the letter.
+                if (tracing) { addTracePoint(ev.x, ev.y); finishTrace() } else invalidate()
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -888,7 +891,10 @@ class LightKeyboardView @JvmOverloads constructor(
         val n = traceCount
         traceCount = 0
         invalidate()
-        if (n >= 3) listener?.onGesture(traceX, traceY, n)
+        // Two points is a real stroke, not a stub: the trace only starts once the finger has left the
+        // key it went down on, and a short flick between neighbouring keys can report exactly one MOVE
+        // before the lift. Demanding three threw those away — every one of them a two-letter word.
+        if (n >= 2) listener?.onGesture(traceX, traceY, n)
     }
 
     private fun abandonTrace() {
