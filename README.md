@@ -6,7 +6,7 @@ bundled-dictionary autocorrect.
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.0.11** (tag `v1.0.11`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.0.13** (tag `v1.0.13`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -148,6 +148,14 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.0.13** (2026-07-31) — **The commonest two-letter words are pinned by a test.** "to", "it", "is"
+  and "my" already decoded first after v1.0.11 — measured across twenty seeds, three trace speeds and
+  the bare two-point flick the view reports for a quick stroke, every one of them wins outright. But the
+  two-letter test measured a *rate* (22 of 26 first, all 26 reachable), and a rate would still pass with
+  any single word broken, so those four now have their own assertion. No ranking change: nothing needed
+  fixing. The count in the older test's comment was one high, and the fourth word that loses on
+  frequency ("ah" to "an") was unnamed; both corrected.
 
 - **v1.0.11** (2026-07-31) — **Two-letter words can be swiped.** "of", "to", "in", "is", "it" and "on"
   are all in the twenty commonest words in English, and none of them could be swiped at all: the

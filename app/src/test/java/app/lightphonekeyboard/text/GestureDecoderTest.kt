@@ -222,11 +222,50 @@ class GestureDecoderTest {
             if (got.firstOrNull() == w) top1++
             if (w !in got) missed.add("$w -> $got")
         }
-        // Measured: 23 of 26 first, all 26 reachable. The three that lose ("go" to "to", "ok" to "on",
-        // "if" to "of") are pairs whose ideal paths genuinely coincide, the commoner word wins, and
-        // backspace or the word before them settles it — the same trade the decoder has always made.
+        // Measured: 22 of 26 first, all 26 reachable. The four that lose ("go" to "to", "ok" to "on",
+        // "if" to "of", "ah" to "an") are pairs whose ideal paths genuinely coincide, the commoner word
+        // wins, and backspace or the word before them settles it — the same trade the decoder has always
+        // made. The four commonest of them are pinned separately below, because those must not slip.
         assertTrue("only $top1 of ${words.size} decoded first", top1 >= 22)
         assertTrue("unreachable: $missed", missed.isEmpty())
+    }
+
+    /**
+     * The four the user named, pinned on their own: "to", "it", "is" and "my". They are among the
+     * most-typed words in English, they are all two letters, and every one of them sits next to a word
+     * the ranker would otherwise prefer — "to" to "top"/"too", "it" to "of"/"or", "is" to "its", "my"
+     * to "mit". The rates in the test above would still pass with one of these broken, so they get
+     * their own assertion: first guess, every seed, at ordinary jitter and as a bare two-point flick.
+     */
+    @Test
+    fun `always decodes the commonest two-letter words first`() {
+        val d = decoder() ?: return
+        val pinned = listOf("to", "it", "is", "my")
+        val wrong = ArrayList<String>()
+        for (w in pinned) {
+            for (seed in 1L..20L) {
+                for (step in listOf(0.35f, 0.45f, 0.55f)) {
+                    val (xs, ys, n) = trace(w, Random(seed), sigma = 0.12f, step = step)
+                    val got = d.decode(xs, ys, n, 4)
+                    if (got.firstOrNull() != w) wrong.add("$w seed $seed step $step -> $got")
+                }
+            }
+            // The same stroke as the view actually reports it when the flick is quick: two points.
+            val xs = floatArrayOf(grid.x(w[0]) + 0.10f, grid.x(w[1]) - 0.10f)
+            val ys = floatArrayOf(grid.y(w[0]), grid.y(w[1]))
+            val got = d.decode(xs, ys, 2, 4)
+            if (got.firstOrNull() != w) wrong.add("two-point $w -> $got")
+        }
+        assertTrue("not decoded first: $wrong", wrong.isEmpty())
+        // And they must survive a badly drifted stroke into the alternatives, which is all backspace
+        // needs. Only that much: at 0.22 sigma a trace of "it" really does land on "of" sometimes, and
+        // pretending otherwise would mean tuning the ranker against a stroke no one meant to draw.
+        for (w in pinned) {
+            for (seed in 1L..20L) {
+                val (xs, ys, n) = trace(w, Random(seed), sigma = 0.22f, step = 0.55f, round = 0.38f)
+                assertTrue("$w vanished at high jitter", w in d.decode(xs, ys, n, 4))
+            }
+        }
     }
 
     /**
