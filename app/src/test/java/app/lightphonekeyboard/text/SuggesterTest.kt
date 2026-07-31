@@ -10,6 +10,15 @@ class SuggesterTest {
         Suggester(it, Corrector(it, KeyGrid.qwerty()))
     }
 
+    /** The same, with the shipped word-pair table wired in. Null if either asset is missing. */
+    private fun contextual(): Suggester? {
+        val pairs = TestContext.bundled() ?: return null
+        val dict = TestDictionary.bundled() ?: return null
+        val c = Corrector(dict, KeyGrid.qwerty())
+        c.context = pairs
+        return Suggester(dict, c).apply { context = pairs }
+    }
+
     @Test
     fun `completes a partial word`() {
         val s = suggester() ?: return
@@ -159,6 +168,122 @@ class SuggesterTest {
         for (p in listOf("Bjorn", "keyb", "recieve", "Lupo", "th", "a")) {
             val words = s.stripFor(p, Suggester.SLOTS).map { it.word.lowercase() }
             assertEquals("duplicates for $p: $words", words.distinct().size, words.size)
+        }
+    }
+
+    // --- ranking against the word before ------------------------------------------------------
+
+    @Test
+    fun `puts the completion that fits the sentence first`() {
+        val s = contextual() ?: return
+        // Real cases, each one a word the frequency prior gets wrong and the preceding word gets right.
+        // "happy bir" offered "birth"; "went wro" offered "wrote"; "how mu" offered "music". None of
+        // them is a bad guess about the *word* — they are all bad guesses about the sentence.
+        val cases = listOf(
+            Triple("happy", "bir", "birthday"),
+            Triple("went", "wro", "wrong"),
+            Triple("how", "mu", "much"),
+            Triple("let", "alo", "alone"),
+            Triple("good", "lu", "luck"),
+            Triple("take", "adva", "advantage"),
+            Triple("very", "plea", "pleased"),
+            Triple("my", "boy", "boyfriend"),
+        )
+        val wrong = cases.mapNotNull { (left, prefix, want) ->
+            val got = s.forPrefix(prefix, Suggester.SLOTS, WordContext(left))
+            if (got.firstOrNull() == want) null else "$left $prefix -> $got (wanted $want)"
+        }
+        assertTrue("context ranking missed: $wrong", wrong.isEmpty())
+        // ...and every one of them is a case the current word alone gets wrong, which is what makes them
+        // worth asserting. If the frequency order ever starts agreeing, these stop testing anything.
+        val alreadyRight = cases.filter { (_, prefix, want) ->
+            s.forPrefix(prefix, Suggester.SLOTS).firstOrNull() == want
+        }
+        assertTrue("no longer demonstrates anything: $alreadyRight", alreadyRight.isEmpty())
+    }
+
+    @Test
+    fun `ranks a sentence start exactly as it always did`() {
+        val s = contextual() ?: return
+        // There is no left context for the first word of a message and no table entry for one either, so
+        // this path has to be untouched — it is the one every message goes through.
+        for (p in listOf("thin", "wor", "keyb", "tomo", "s")) {
+            assertEquals(
+                "sentence start changed for $p",
+                s.forPrefix(p, Suggester.SLOTS),
+                s.forPrefix(p, Suggester.SLOTS, WordContext(null)),
+            )
+        }
+    }
+
+    @Test
+    fun `never hides the word being typed, whatever the sentence`() {
+        val s = contextual() ?: return
+        // The rule that makes this safe to ship. Whatever the preceding word does to the order, the
+        // completion the spelling liked best has to still be somewhere in the strip: a keyboard that
+        // buries the obvious word is worse than one that occasionally offers a silly one.
+        val lefts = listOf("i", "the", "to", "very", "happy", "on", "a", "good", "went")
+        for (p in listOf("thin", "birthda", "muc", "morn", "wa", "lo", "keyb", "peo", "tomo")) {
+            val obvious = s.forPrefix(p, Suggester.SLOTS).firstOrNull() ?: continue
+            for (left in lefts) {
+                val got = s.forPrefix(p, Suggester.SLOTS, WordContext(left))
+                assertTrue("$left $p lost $obvious: $got", obvious in got)
+            }
+        }
+    }
+
+    @Test
+    fun `keeps the strip the same size and duplicate-free with context`() {
+        val s = contextual() ?: return
+        for (left in listOf("i", "very", "happy", null)) {
+            for (p in listOf("thin", "birthda", "muc", "a", "th", "Wil")) {
+                val got = s.stripFor(p, Suggester.SLOTS, WordContext(left))
+                assertTrue("$left $p gave ${got.size}", got.size <= Suggester.SLOTS)
+                val words = got.map { it.word.lowercase() }
+                assertEquals("duplicates for $left $p: $words", words.distinct().size, words.size)
+            }
+        }
+    }
+
+    // --- keeping a word that never stops having completions -----------------------------------
+
+    @Test
+    fun `offers the literal for a name that is also the start of a real word`() {
+        val s = suggester() ?: return
+        // The gap this closes. "Sam" completes to "same" and "sample" forever, so the going-nowhere rule
+        // never fired and the only way to add the name was the settings screen. A capital typed in the
+        // middle of a sentence is the signal, and the IME is what decides that; here it arrives settled.
+        // All five are absent from the word list and all five complete forever: Wil to Wilbur, Kai to
+        // Kaiser, Cass to Casserole, Isa to Isabel, Bram to Bramble.
+        for (p in listOf("Wil", "Kai", "Cass", "Isa", "Bram")) {
+            assertEquals("no literal for $p", p, s.literalFor(p, WordContext("called", settled = true)))
+        }
+    }
+
+    @Test
+    fun `still says nothing mid-word when the capital is the keyboard's own doing`() {
+        val s = suggester() ?: return
+        // Auto-capitalisation puts a capital on the first word of every sentence, so a capital there says
+        // nothing at all — and the strip must not start offering to learn "K", "Ke", "Key".
+        for (p in listOf("Ke", "Key", "Keyb", "Wil", "Cass", "Tomo")) {
+            assertEquals("literal offered for $p", null, s.literalFor(p))
+        }
+    }
+
+    @Test
+    fun `never offers a literal for a word it already knows, settled or not`() {
+        val s = suggester() ?: return
+        // Being settled bypasses the completions test, not the is-this-already-a-word test.
+        for (p in listOf("the", "keyboard", "receive", "basil", "same")) {
+            assertEquals("literal offered for $p", null, s.literalFor(p, WordContext(settled = true)))
+        }
+    }
+
+    @Test
+    fun `a settled literal still has to be storable`() {
+        val s = suggester() ?: return
+        for (p in listOf("", "a", "mp3", "don't-", "x9")) {
+            assertEquals("literal offered for $p", null, s.literalFor(p, WordContext(settled = true)))
         }
     }
 }

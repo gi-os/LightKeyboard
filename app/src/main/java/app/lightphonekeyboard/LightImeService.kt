@@ -14,8 +14,11 @@ import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
 import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
+import app.lightphonekeyboard.text.ContextRanker
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.StripItem
+import app.lightphonekeyboard.text.Suggester
+import app.lightphonekeyboard.text.WordContext
 import java.util.Locale
 
 /**
@@ -35,6 +38,12 @@ import java.util.Locale
  *    with a trailing space. Backspace immediately afterwards cycles through the runner-up readings of
  *    the same trace instead of deleting — which is how the keyboard offers alternatives without a
  *    suggestion bar, keeping the LightOS look untouched.
+ *
+ * All three of those rank candidates against the word before the cursor as well as the one being typed
+ * (see [WordContext] and [app.lightphonekeyboard.text.ContextRanker]). This service is the only part of
+ * the app that can see the field, so it is where the sentence is read: [contextOf] works out the
+ * preceding word and whether a capital was the user's doing or the keyboard's, once per keystroke, from
+ * the same text fetch the trailing word already needed.
  */
 class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellCheckerSessionListener {
 
@@ -107,6 +116,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         // The settings screen is a separate Activity in the same process, so a word added there only
         // reaches the running keyboard when it next opens.
         engine.reloadUserWords()
+        engine.reloadForgottenWords()
         updateShift()
         refreshSuggestions()
     }
@@ -163,9 +173,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             ic.commitText(s, 1)
             return
         }
-        // A word terminator: try to fix the word, then commit [s].
-        val original = if (autocorrectOn()) trailingWord() else ""
-        val fix = fixFor(original)
+        // A word terminator: try to fix the word, then commit [s]. The context is read before anything
+        // is rewritten, so the preceding word is the one the user actually typed after.
+        val before = textBeforeCursor(CONTEXT_LOOKBACK)
+        val original = if (autocorrectOn()) trailingWordOf(before) else ""
+        val fix = fixFor(original, contextOf(before, original))
         if (fix != null && !fix.equals(original, ignoreCase = true)) {
             val cased = applyCase(original, fix)
             ic.beginBatchEdit()
@@ -246,8 +258,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         clearGesture()
         // Fix the last word before firing the action / newline.
         if (autocorrectOn()) {
-            val original = trailingWord()
-            val fix = fixFor(original)
+            val before = textBeforeCursor(CONTEXT_LOOKBACK)
+            val original = trailingWordOf(before)
+            val fix = fixFor(original, contextOf(before, original))
             if (fix != null && !fix.equals(original, ignoreCase = true)) {
                 val cased = applyCase(original, fix)
                 ic.beginBatchEdit()
@@ -422,7 +435,33 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      */
     private fun keepAsTyped(word: String) {
         val ic = currentInputConnection ?: return
-        val original = trailingWord()
+        // Autocorrect has already replaced this word. The replacement is sitting at the cursor, so the
+        // literal has to go back in its place — committing it would leave "Wild Wil " behind, both the
+        // word the user rejected and the one they wanted.
+        val from = undoFrom
+        val to = undoTo
+        if (from != null && to != null && ic.getTextBeforeCursor(from.length, 0)?.toString() == from) {
+            clearUndo()
+            clearGesture()
+            ic.beginBatchEdit()
+            ic.deleteSurroundingText(from.length, 0)
+            ic.commitText(to, 1)
+            ic.endBatchEdit()
+            learnWord(word)
+            refreshSuggestions()
+            return
+        }
+        val before = textBeforeCursor(CONTEXT_LOOKBACK)
+        val original = trailingWordOf(before)
+        // Nothing is being typed and the word is the one just finished: it is already in the field
+        // exactly as wanted, and learning it is the entire action. Committing again would double it.
+        if (original.isEmpty() && justFinishedWord(before) == word) {
+            clearUndo()
+            clearGesture()
+            learnWord(word)
+            refreshSuggestions()
+            return
+        }
         clearUndo()
         clearGesture()
         ic.beginBatchEdit()
@@ -451,6 +490,45 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     /**
+     * A slot held down instead of tapped: stop offering that word.
+     *
+     * The strip is where a bad suggestion is actually seen, so it is where it should be possible to be
+     * rid of it. Before this, the only cure was the settings screen, and only for the user's own words —
+     * a word from the bundled list that kept crowding out the one you meant could not be removed at all.
+     */
+    override fun onSuggestionForget(item: StripItem) {
+        if (item.literal) return   // the user's own spelling; there is nothing learned to remove
+        forgetWord(item.word)
+        refreshSuggestions()
+    }
+
+    /**
+     * Stop offering [word] anywhere: dropped from the personal list *and* added to the forgotten one.
+     *
+     * Both, not one or the other. A word can be in the personal list and the bundled dictionary at once
+     * ("basil"), and removing it from the personal list alone would leave it still being suggested — a
+     * long-press that visibly does nothing is worse than no long-press. Doing both means one hold always
+     * means the same thing.
+     *
+     * It does not make the word misspelled: [app.lightphonekeyboard.text.ForgottenWords] is consulted
+     * only when choosing what to *offer*, so typing it deliberately is still left alone. Both lists are
+     * editable in Settings, because a destructive long-press with no way back is a trap.
+     */
+    private fun forgetWord(word: String) {
+        val user = engine.userWords
+        if (user.contains(word)) {
+            Prefs.setUserWords(this, user.without(word).serialize())
+            engine.reloadUserWords()
+        }
+        val gone = engine.forgotten
+        val after = gone.withWord(word)
+        if (after.entries != gone.entries) {
+            Prefs.setForgottenWords(this, after.serialize())
+            engine.reloadForgottenWords()
+        }
+    }
+
+    /**
      * Recompute the strip from where the cursor is now. Called after every keystroke and cursor move.
      *
      * Cheap enough to run unconditionally — the prefix search is bounded by the number of completions
@@ -472,7 +550,44 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             )
             return
         }
-        kb.setSuggestions(s.stripFor(trailingWord(), SUGGESTION_SLOTS))
+        val before = textBeforeCursor(CONTEXT_LOOKBACK)
+        val prefix = trailingWordOf(before)
+        if (prefix.isEmpty()) {
+            val keep = keepableWord(before, s)
+            kb.setSuggestions(if (keep == null) emptyList() else listOf(StripItem(keep, literal = true)))
+            return
+        }
+        kb.setSuggestions(s.stripFor(prefix, SUGGESTION_SLOTS, contextOf(before, prefix)))
+    }
+
+    /**
+     * The word to offer keeping when nothing is being typed, or null for an empty strip.
+     *
+     * This is what makes "add the word I typed" always reachable, which it was not. The strip's
+     * keep-as-typed slot only appeared for a word the dictionary could not extend, so a name that is
+     * also the start of an ordinary word — Wil, Kai, Cass, Ravi — never got one, and a word autocorrect had
+     * already rewritten had no slot either: the spelling the user wanted was no longer on screen at all.
+     * Both are covered here, in the moment after the word is finished, where the strip is otherwise
+     * blank and a single quoted word costs nothing.
+     *
+     * The corrected case comes first, because when both apply it is the more specific one — and because
+     * the word to keep is the original, not the replacement now sitting in the field.
+     */
+    private fun keepableWord(before: CharSequence?, s: Suggester): String? {
+        revertableWord()?.let { return s.literalFor(it, SETTLED) }
+        val done = justFinishedWord(before)
+        if (done.isEmpty()) return null
+        return s.literalFor(done, SETTLED)
+    }
+
+    /** The word autocorrect replaced, while its replacement is still sitting untouched at the cursor. */
+    private fun revertableWord(): String? {
+        val from = undoFrom ?: return null
+        val to = undoTo ?: return null
+        val ic = currentInputConnection ?: return null
+        if (ic.getTextBeforeCursor(from.length, 0)?.toString() != from) return null
+        // Both are "the word + the single character that terminated it" — see where they are armed.
+        return to.dropLast(1)
     }
 
     // ------------------------------------------------------------------ swipe typing
@@ -498,7 +613,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val ic = currentInputConnection ?: return
         if (!Prefs.swipeTyping(this)) return
         val decoder = engine.decoder ?: return          // dictionary still loading, or unavailable
-        val words = decoder.decode(xs, ys, count, GESTURE_ALTERNATES)
+        val words = decoder.decode(
+            xs, ys, count, GESTURE_ALTERNATES, contextOf(textBeforeCursor(CONTEXT_LOOKBACK), ""),
+        )
         if (words.isEmpty()) return
         clearUndo()
         gestureCapitalized = keyboard?.isShifted == true
@@ -574,9 +691,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * to whatever the phone's spell checker had to say, which is the pre-existing path and on LightOS
      * is normally nothing at all.
      */
-    private fun fixFor(word: String): String? {
+    private fun fixFor(word: String, ctx: WordContext): String? {
         if (word.length < 2) return null
-        engine.corrector?.let { return it.correct(word) }
+        engine.corrector?.let { return it.correct(word, ctx) }
         return corrections[word]
     }
 
@@ -648,11 +765,45 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private fun isCorrectTrigger(c: Char): Boolean = c.isWhitespace() || c in ".,!?;:)"
 
     /** The run of word characters immediately before the cursor. */
-    private fun trailingWord(): String {
-        val before = currentInputConnection?.getTextBeforeCursor(48, 0) ?: return ""
+    private fun trailingWord(): String = trailingWordOf(textBeforeCursor(CONTEXT_LOOKBACK))
+
+    /** The same, from text already fetched. Every keystroke needs this and the sentence around it, and
+     *  reading the field is an IPC call to the hosting app, so the two share one fetch. */
+    private fun trailingWordOf(before: CharSequence?): String {
+        if (before == null) return ""
         var i = before.length
         while (i > 0 && isWordChar(before[i - 1])) i--
-        return before.substring(i).toString()
+        return before.subSequence(i, before.length).toString()
+    }
+
+    /**
+     * The sentence around [word], for the rankers.
+     *
+     * Two things come out of the same text. The preceding word is [ContextRanker.leftContextOf]'s job,
+     * including deciding that a full stop ends the context. The other is whether the capital on [word]
+     * is the *user's*: the keyboard auto-capitalises the first word of every sentence, so a capital
+     * there says nothing at all, while one in the middle of a sentence means someone reached for shift,
+     * and the only reason to do that is a name. Having a left context is exactly the test for "not at a
+     * sentence start", so the two derivations share it rather than asking the field twice.
+     */
+    private fun contextOf(before: CharSequence?, word: String): WordContext {
+        val left = ContextRanker.leftContextOf(before)
+        val named = left != null && word.firstOrNull()?.isUpperCase() == true
+        return WordContext(left, settled = named)
+    }
+
+    /**
+     * The word that has just been finished — the run of letters before the single space or punctuation
+     * mark that ended it. Empty while a word is still being typed, and empty again as soon as anything
+     * else follows, so what it offers is momentary rather than a slot that lingers all sentence.
+     */
+    private fun justFinishedWord(before: CharSequence?): String {
+        if (before == null || before.length < 2) return ""
+        if (isWordChar(before[before.length - 1])) return ""
+        val end = before.length - 1
+        var i = end
+        while (i > 0 && isWordChar(before[i - 1])) i--
+        return before.subSequence(i, end).toString()
     }
 
     /** Match the suggestion's case to what the user typed (ALL CAPS / Capitalized / lower). */
@@ -677,5 +828,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         private const val GESTURE_ALTERNATES = 4
         /** Slots in the suggestion strip. Mirrors Suggester.SLOTS. */
         private const val SUGGESTION_SLOTS = 3
+        /** Text to read behind the cursor: enough for the word being typed plus the one before it. */
+        private const val CONTEXT_LOOKBACK = 48
+        /** A word that has stopped growing, so the keep-as-typed slot need not wait to see where it goes. */
+        private val SETTLED = WordContext(settled = true)
     }
 }

@@ -18,6 +18,9 @@
     <string name="words_empty">Nothing added yet.</string>
     <string name="words_rejected">Letters only, at least two.</string>
     <string name="words_remove">Remove %1$s</string>
+    <string name="forgotten_title">Forgotten words</string>
+    <string name="forgotten_blurb">Words you held down in the suggestion strip. They\'re still spelled correctly — the keyboard just stops offering them.</string>
+    <string name="forgotten_restore">Restore %1$s</string>
     <string name="words_none">None</string>
     <string name="words_one">1 word</string>
     <string name="words_many">%1$d words</string>

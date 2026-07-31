@@ -2,8 +2,10 @@ package app.lightphonekeyboard
 
 import android.content.Context
 import android.util.Log
+import app.lightphonekeyboard.text.ContextModel
 import app.lightphonekeyboard.text.Corrector
 import app.lightphonekeyboard.text.Dictionary
+import app.lightphonekeyboard.text.ForgottenWords
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Suggester
@@ -11,13 +13,20 @@ import app.lightphonekeyboard.text.UserWords
 
 /**
  * Owns the bundled dictionary and the two things built on it: [Corrector] (autocorrect for tapped
- * words) and [GestureDecoder] (swipe typing).
+ * words) and [GestureDecoder] (swipe typing), plus the word-pair table ([ContextModel]) all three use
+ * to rank candidates against the preceding word.
  *
  * The dictionary is ~800 KB of text and takes a beat to parse, so it loads on a background thread the
  * first time the keyboard is created. Until it lands, every accessor here returns null and the
  * keyboard behaves exactly as it did before — taps type letters, swipes do nothing. That way a slow
  * first load can never stall the first keypress, and a corrupt asset degrades to a plain keyboard
  * instead of crashing the IME (which on a phone means no keyboard at all, anywhere).
+ *
+ * The pair table is loaded the same way and failed the same way, but one step softer again: it is read
+ * *after* the dictionary and its absence is not allowed to hold up any of the three. Without it the
+ * keyboard ranks on the current word alone, which is exactly what it did before the table existed —
+ * "context ranking is off" is a working keyboard, and that is the only acceptable failure mode for
+ * something running inside every text field on the phone.
  *
  * One instance per IME process; [corrector] and [decoder] are only touched from the IME thread.
  */
@@ -41,6 +50,11 @@ class TextEngine(private val context: Context) {
     /** The user's own words, loaded from prefs and pushed into everything that searches. */
     @Volatile
     var userWords: UserWords = UserWords.EMPTY
+        private set
+
+    /** The words the user has told the strip to forget, pushed into everything that ranks. */
+    @Volatile
+    var forgotten: ForgottenWords = ForgottenWords.EMPTY
         private set
 
     private var loading = false
@@ -71,14 +85,38 @@ class TextEngine(private val context: Context) {
                 d.userWords = words
                 s.userWords = words
                 userWords = words
+                val gone = ForgottenWords.deserialize(Prefs.forgottenWords(context))
+                c.forgotten = gone
+                d.forgotten = gone
+                s.forgotten = gone
+                forgotten = gone
                 corrector = c
                 decoder = d
                 suggester = s
                 dictionary = loaded
+                // Published last and separately: the three above are usable without it, and making them
+                // wait on another 1.25 MB read would delay autocorrect for no reason.
+                val pairs = try {
+                    context.resources.openRawResource(R.raw.bigrams).use { ContextModel.load(it) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "pair table unavailable, ranking on the current word alone", e)
+                    null
+                }
+                if (pairs != null) {
+                    c.context = pairs
+                    d.context = pairs
+                    s.context = pairs
+                    contextModel = pairs
+                }
             }
             loading = false
         }, "light-kb-dict").apply { priority = Thread.MIN_PRIORITY }.start()
     }
+
+    /** The word-pair table, once read. Null means ranking falls back to the current word alone. */
+    @Volatile
+    var contextModel: ContextModel? = null
+        private set
 
     /** Held so a layout that happened before the load finished still reaches the two consumers. */
     @Volatile
@@ -107,6 +145,16 @@ class TextEngine(private val context: Context) {
         corrector?.userWords = words
         decoder?.userWords = words
         suggester?.userWords = words
+    }
+
+    /** The same for the forgotten list, which the strip's long-press and the settings screen both edit. */
+    fun reloadForgottenWords() {
+        val gone = ForgottenWords.deserialize(Prefs.forgottenWords(context))
+        if (gone.entries == forgotten.entries) return
+        forgotten = gone
+        corrector?.forgotten = gone
+        decoder?.forgotten = gone
+        suggester?.forgotten = gone
     }
 
     private companion object {

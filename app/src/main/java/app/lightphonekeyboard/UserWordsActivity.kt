@@ -8,6 +8,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import app.lightphonekeyboard.text.ForgottenWords
 import app.lightphonekeyboard.text.UserWords
 
 /**
@@ -18,20 +19,30 @@ import app.lightphonekeyboard.text.UserWords
  * being autocorrected into something else, becomes a word autocorrect can arrive *at*, and becomes
  * traceable by swipe. Without it a name like "Bjorn" is rewritten to "born" every time it is typed.
  *
+ * Below it, the words held down in the suggestion strip to be forgotten. They live on this screen rather
+ * than a new one because a destructive gesture needs somewhere to be undone — a long-press that silently
+ * deletes with no way back is a trap — and because the two lists are the same idea pointing in opposite
+ * directions. The section is hidden entirely while nothing has been forgotten, so the screen looks no
+ * different for anyone who never uses the gesture.
+ *
  * Writes straight to [Prefs] on each change; the running keyboard re-reads the list the next time it
  * opens (see TextEngine.reloadUserWords), since an Activity and the IME share only preferences.
  */
 class UserWordsActivity : AppCompatActivity() {
 
     private var words = UserWords.EMPTY
+    private var forgotten = ForgottenWords.EMPTY
     private lateinit var list: LinearLayout
     private lateinit var input: EditText
     private lateinit var empty: TextView
+    private lateinit var forgottenSection: LinearLayout
+    private lateinit var forgottenList: LinearLayout
     private var pad = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         words = UserWords.deserialize(Prefs.userWords(this))
+        forgotten = ForgottenWords.deserialize(Prefs.forgottenWords(this))
 
         pad = (24 * resources.displayMetrics.density).toInt()
         val side = (34 * resources.displayMetrics.density).toInt()   // LightOS horizontal content inset
@@ -83,6 +94,16 @@ class UserWordsActivity : AppCompatActivity() {
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
 
+        forgottenList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        forgottenSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, pad, 0, 0)
+            addView(label(getString(R.string.forgotten_title), 22f, R.color.white))
+            addView(label(getString(R.string.forgotten_blurb), 14f, R.color.gray))
+            addView(forgottenList)
+        }
+        root.addView(forgottenSection)
+
         setContentView(
             LightScrollView(this).apply {
                 setBackgroundColor(getColor(R.color.black))
@@ -120,36 +141,53 @@ class UserWordsActivity : AppCompatActivity() {
         refresh()
     }
 
-    /** Rebuild the list. It is a handful of rows, so replacing them all is simpler than diffing. */
+    /** Put a forgotten word back into circulation. */
+    private fun restore(word: String) {
+        forgotten = forgotten.without(word)
+        Prefs.setForgottenWords(this, forgotten.serialize())
+        refresh()
+    }
+
+    /** Rebuild both lists. They are a handful of rows, so replacing them all is simpler than diffing. */
     private fun refresh() {
         list.removeAllViews()
         empty.visibility = if (words.size == 0) TextView.VISIBLE else TextView.GONE
         for (word in words.entries) {
-            val nameView = TextView(this).apply {
-                text = word
-                setTextColor(getColor(R.color.white))
-                textSize = 22f
-            }
-            // A "✕" rather than a swipe or a long-press: both are invisible affordances, and this screen
-            // has no room to teach one.
-            val removeView = TextView(this).apply {
-                text = "✕"
-                setTextColor(getColor(R.color.gray))
-                textSize = 22f
-                setPadding(pad / 2, 0, 0, 0)
-                isClickable = true
-                contentDescription = getString(R.string.words_remove, word)
-                setOnClickListener { remove(word) }
-            }
-            list.addView(
-                LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, pad / 2, 0, pad / 2)
-                    addView(nameView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                    addView(removeView)
-                },
-            )
+            list.addView(row(word, getString(R.string.words_remove, word)) { remove(word) })
+        }
+        forgottenList.removeAllViews()
+        // No empty state for this one: nothing has been forgotten is the normal condition, and a section
+        // explaining a gesture the user may never have used is clutter on a 3.9" screen.
+        forgottenSection.visibility = if (forgotten.isEmpty) LinearLayout.GONE else LinearLayout.VISIBLE
+        for (word in forgotten.entries) {
+            forgottenList.addView(row(word, getString(R.string.forgotten_restore, word)) { restore(word) })
+        }
+    }
+
+    /** One list row: the word, and a "✕" that takes it out of whichever list it is in. */
+    private fun row(word: String, describe: String, onRemove: () -> Unit): LinearLayout {
+        val nameView = TextView(this).apply {
+            text = word
+            setTextColor(getColor(R.color.white))
+            textSize = 22f
+        }
+        // A "✕" rather than a swipe or a long-press: both are invisible affordances, and this screen
+        // has no room to teach one.
+        val removeView = TextView(this).apply {
+            text = "✕"
+            setTextColor(getColor(R.color.gray))
+            textSize = 22f
+            setPadding(pad / 2, 0, 0, 0)
+            isClickable = true
+            contentDescription = describe
+            setOnClickListener { onRemove() }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, pad / 2, 0, pad / 2)
+            addView(nameView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(removeView)
         }
     }
 }

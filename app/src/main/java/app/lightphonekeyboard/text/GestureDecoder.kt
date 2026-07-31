@@ -44,6 +44,14 @@ class GestureDecoder(
     @Volatile
     var userWords: UserWords = UserWords.EMPTY
 
+    /** Words the user has forgotten. A trace never resolves to one — see [ForgottenWords]. */
+    @Volatile
+    var forgotten: ForgottenWords = ForgottenWords.EMPTY
+
+    /** The word-pair table, or null when it hasn't loaded — in which case ranking is what it was. */
+    @Volatile
+    var context: ContextModel? = null
+
     // Resampled input path (location channel) and its centred/scaled copy (shape channel).
     private val ux = FloatArray(SAMPLES)
     private val uy = FloatArray(SAMPLES)
@@ -63,7 +71,13 @@ class GestureDecoder(
      * [count] raw touch points in key units. Returns empty if the path is too short to be a gesture
      * or nothing in the dictionary fits it.
      */
-    fun decode(px: FloatArray, py: FloatArray, count: Int, limit: Int = 4): List<String> {
+    fun decode(
+        px: FloatArray,
+        py: FloatArray,
+        count: Int,
+        limit: Int = 4,
+        ctx: WordContext = WordContext.NONE,
+    ): List<String> {
         if (count < 3) return emptyList()
         val pathLength = resample(px, py, count, ux, uy)
         if (pathLength < MIN_PATH_LENGTH) return emptyList()
@@ -83,7 +97,13 @@ class GestureDecoder(
         val user = userWords
         scan(dict, MAIN, g, startMask, endMask, corridor, heap)
         user.dictionary?.let { scan(it, USER, g, startMask, endMask, corridor, heap) }
-        return heap.words(dict, user)
+        // Reordered by the preceding word, which is where a swipe needs it most: near-identical traces
+        // ("way"/"wag", "sun"/"sum") are settled by frequency alone, and after "on my" the corpus has an
+        // opinion worth more than that. Held to the correction bound, not the strip's, because the best
+        // reading is committed on lift without being asked.
+        return ContextRanker.rerank(
+            heap.words(dict, user), ctx.left, context, limit, ContextRanker.MAX_SHIFT_CORRECTION,
+        )
     }
 
     /** Score every candidate in [source] that survives pruning. Shared by the bundled and user lists. */
@@ -110,6 +130,8 @@ class GestureDecoder(
             if (location > LOCATION_CUTOFF) continue                    // nowhere near: reject cheaply
             normalize(tx, ty, nx, ny)
             val shape = meanDistance(sx, sy, nx, ny)
+            // Last, so a forgotten word costs a String only once a trace has actually landed near it.
+            if (forgotten.contains(source, i)) continue
             heap.offer(tag, i, source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape)
         }
     }

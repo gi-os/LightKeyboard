@@ -9,6 +9,7 @@ object Prefs {
     private const val KEY_SWIPE = "swipe_typing"
     private const val KEY_SUGGESTIONS = "suggestions"
     private const val KEY_USER_WORDS = "user_words"
+    private const val KEY_FORGOTTEN_WORDS = "forgotten_words"
     private const val KEY_VOICE = "voice_enabled"
     private const val KEY_COMPACT = "compact_mode"
     private const val KEY_AUTO_PERIOD = "auto_period"
@@ -52,6 +53,12 @@ object Prefs {
 
     fun setUserWords(c: Context, value: String) =
         prefs(c).edit().putString(KEY_USER_WORDS, value).apply()
+
+    /** Words the user long-pressed away in the suggestion strip, newline-separated. See ForgottenWords. */
+    fun forgottenWords(c: Context): String? = prefs(c).getString(KEY_FORGOTTEN_WORDS, null)
+
+    fun setForgottenWords(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_FORGOTTEN_WORDS, value).apply()
 
     /** Swipe typing: drag across the letters to write a whole word. On by default. */
     fun swipeTyping(c: Context): Boolean = prefs(c).getBoolean(KEY_SWIPE, true)

@@ -80,6 +80,12 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** A slot tapped in the suggestion strip. [StripItem.literal] marks the keep-as-typed slot. */
         fun onSuggestion(item: StripItem)
+
+        /**
+         * A slot held down in the suggestion strip: forget this word, don't insert it. Never fired for
+         * the keep-as-typed slot, which is the user's own spelling and has nothing to forget.
+         */
+        fun onSuggestionForget(item: StripItem)
     }
 
     var listener: Listener? = null
@@ -169,6 +175,25 @@ class LightKeyboardView @JvmOverloads constructor(
             }
         }
     }
+
+    // Suggestion held down → forget that word. Fires from the same posted-Runnable pattern as the
+    // backspace repeat above; there is no GestureDetector anywhere in this view and adding one only for
+    // the strip would put a second, differently-tuned idea of "long press" beside the existing one.
+    private val suggestionHold = Runnable {
+        val slot = pressedSuggestion
+        val item = if (slot >= 0) suggestionAt(slot) else null
+        // The literal is the word the user just typed. There is nothing learned to remove, and eating
+        // the tap on it would break the one slot whose whole job is to be tapped.
+        if (item != null && !item.literal) {
+            suggestionForgotten = true
+            pressedSuggestion = -1
+            invalidate()
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener?.onSuggestionForget(item)
+        }
+    }
+    /** Set once a hold has fired, so the finger lifting afterwards doesn't also insert the word. */
+    private var suggestionForgotten = false
 
     /** One key with its (gapless) hit rect and its inset, drawn-to rect. */
     private class PlacedKey(val id: String, val hit: RectF, val vis: RectF) {
@@ -654,6 +679,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 if (slot >= 0) {
                     pressedSuggestion = slot
                     firstKeyRetractable = false
+                    armSuggestionHold()
                     invalidate()
                     return true
                 }
@@ -674,9 +700,14 @@ class LightKeyboardView @JvmOverloads constructor(
                 if (pressedSuggestion >= 0) {
                     // Slide off the slot and the tap is abandoned, the usual button behaviour.
                     val still = suggestionSlotAt(ev.x, ev.y)
-                    if (still != pressedSuggestion) { pressedSuggestion = -1; invalidate() }
+                    if (still != pressedSuggestion) {
+                        pressedSuggestion = -1
+                        removeCallbacks(suggestionHold)
+                        invalidate()
+                    }
                     return true
                 }
+                if (suggestionForgotten) return true   // the hold already acted; ignore the rest of it
                 val idx = ev.findPointerIndex(firstPointerId)
                 if (idx >= 0 && !dismissedThisGesture) {
                     val x = ev.getX(idx)
@@ -725,8 +756,10 @@ class LightKeyboardView @JvmOverloads constructor(
                 pressedSuggestion = -1
                 pressed.clear()
                 stopBackspaceRepeat()
+                removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
+                if (suggestionForgotten) { suggestionForgotten = false; invalidate(); return true }
                 if (slot >= 0) {
                     val item = suggestionAt(slot)
                     invalidate()
@@ -738,8 +771,10 @@ class LightKeyboardView @JvmOverloads constructor(
 
             MotionEvent.ACTION_CANCEL -> {
                 pressedSuggestion = -1
+                suggestionForgotten = false
                 pressed.clear()
                 stopBackspaceRepeat()
+                removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
                 abandonTrace()   // the window took the gesture away; don't guess a word from half of it
@@ -770,6 +805,12 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun stopBackspaceRepeat() {
         backspacePointerId = -1
         removeCallbacks(backspaceRepeat)
+    }
+
+    private fun armSuggestionHold() {
+        suggestionForgotten = false
+        removeCallbacks(suggestionHold)
+        postDelayed(suggestionHold, SUGGESTION_HOLD_MS)
     }
 
     // ------------------------------------------------------------------ swipe typing
@@ -1071,6 +1112,8 @@ class LightKeyboardView @JvmOverloads constructor(
         abandonTrace()
         suggestions = emptyList()
         pressedSuggestion = -1
+        suggestionForgotten = false
+        removeCallbacks(suggestionHold)
         saveLearnedOffsets()   // persist what we learned in the field we're leaving
         applyPrefs()
         // Number / phone / date fields open straight on the symbols layer (its top row is 1-0).
@@ -1144,6 +1187,9 @@ class LightKeyboardView @JvmOverloads constructor(
     private val BACKSPACE_CHAR_INTERVAL_MS = 95L    // per-character repeat rate
     private val BACKSPACE_WORD_AFTER_MS = 1500L     // after this long holding, delete whole words
     private val BACKSPACE_WORD_INTERVAL_MS = 190L   // per-word repeat rate
+    // Longer than Android's 500ms default. Forgetting a word is destructive and the strip's slots are
+    // narrow, so a hold has to be unmistakably a hold rather than a slow, badly aimed tap.
+    private val SUGGESTION_HOLD_MS = 650L
 
     private fun dpf(v: Int): Float = v * resources.displayMetrics.density
     private fun dpf(v: Float): Float = v * resources.displayMetrics.density

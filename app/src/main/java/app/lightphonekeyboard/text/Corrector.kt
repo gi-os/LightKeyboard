@@ -18,6 +18,13 @@ package app.lightphonekeyboard.text
  *    common one is nearly always the intended one. Candidates are ranked on
  *    `ln P(word) − LAMBDA × editCost`, which is a log-posterior under a noisy-channel model.
  *
+ * Frequency alone breaks them wrongly often enough to be noticed, though, because it cannot see the
+ * sentence: "i thin" corrects to "thing" over "think" purely because "thing" is the commoner word. So
+ * the finalists are reordered by how well each follows the preceding word — see [ContextRanker]. That
+ * reordering is held to [ContextRanker.MAX_SHIFT_CORRECTION], a much tighter bound than the suggestion
+ * strip's, because this path commits without being asked and a correction the user has to spot and undo
+ * costs more than a suggestion they can ignore.
+ *
  * A word that is already in the dictionary is never touched. Correction only happens once a word is
  * finished, so nothing rewrites itself under the cursor mid-word.
  *
@@ -36,16 +43,29 @@ class Corrector(
     var userWords: UserWords = UserWords.EMPTY
 
     /**
-     * The correction for [typed], or null to leave it exactly as typed. Case is not considered here —
-     * the caller re-applies the user's capitalisation.
+     * Words the user has forgotten. Never corrected *to*; still left alone when typed, because
+     * forgetting a word says "stop offering me this", not "this is misspelled" — see [ForgottenWords].
      */
-    fun correct(typed: String): String? = suggest(typed, 1).firstOrNull()
+    @Volatile
+    var forgotten: ForgottenWords = ForgottenWords.EMPTY
+
+    /** The word-pair table, or null when it hasn't loaded — in which case ranking is what it was. */
+    @Volatile
+    var context: ContextModel? = null
+
+    /**
+     * The correction for [typed], or null to leave it exactly as typed. Case is not considered here —
+     * the caller re-applies the user's capitalisation. [ctx] carries the preceding word, which is what
+     * lets "i thin" land on "think" rather than on the commoner "thing".
+     */
+    fun correct(typed: String, ctx: WordContext = WordContext.NONE): String? =
+        suggest(typed, 1, ctx).firstOrNull()
 
     /**
      * Up to [limit] replacements for [typed], best first. Empty when the word should be left alone:
      * it is already a real word, too short to correct safely, or nothing plausible is near it.
      */
-    fun suggest(typed: String, limit: Int = 3): List<String> {
+    fun suggest(typed: String, limit: Int = 3, ctx: WordContext = WordContext.NONE): List<String> {
         val w = typed.lowercase()
         val n = w.length
         if (n < MIN_LENGTH || n > MAX_LENGTH) return emptyList()
@@ -66,10 +86,16 @@ class Corrector(
         // instead of a DP pass. This is what keeps a scan of ~50k candidates inside a frame.
         val maxLetterMismatch = budget.toInt() + 1
 
-        val heap = TopK(limit)
+        // Widened before reranking when there is a preceding word to rank on: at limit 1 there is
+        // nothing to reorder, so the whole feature would be a no-op on the path that matters most.
+        val pool = if (context != null && ctx.left != null) POOL.coerceAtLeast(limit) else limit
+        val heap = TopK(pool)
         scan(dict, MAIN, w, n, typedMask, maxLetterMismatch, budget, heap)
         userWords.dictionary?.let { scan(it, USER, w, n, typedMask, maxLetterMismatch, budget, heap) }
-        return heap.words(dict, userWords)
+        return ContextRanker.rerank(
+            heap.words(dict, userWords), ctx.left, context, limit,
+            ContextRanker.MAX_SHIFT_CORRECTION,
+        )
     }
 
     /** Score every plausible candidate in [source] into [heap]. Shared by the bundled and user lists. */
@@ -89,6 +115,9 @@ class Corrector(
             if (Integer.bitCount(typedMask and m.inv()) > maxLetterMismatch) continue
             val cost = editCost(typed, source, i, budget)
             if (cost > budget) continue
+            // Checked here rather than in the mask tests above: this costs a String, and only the
+            // handful of candidates that already survived the distance budget ever reach it.
+            if (forgotten.contains(source, i)) continue
             heap.offer(tag, i, source.logFreq(i) - LAMBDA * cost)
         }
     }
@@ -218,6 +247,13 @@ class Corrector(
         const val MAX_LENGTH = 24
         /** Candidates may differ from the typed length by at most this much. */
         private const val MAX_LENGTH_DELTA = 2
+
+        /**
+         * Finalists to gather before context reorders them. Deliberately small: the noisy-channel score
+         * is a real posterior, so anything outside the top few is not a plausible reading of what was
+         * typed no matter how well it fits the sentence.
+         */
+        private const val POOL = 5
 
         /**
          * The noisy-channel weights. These were fitted, not guessed: tools/../CorrectorTest holds a
