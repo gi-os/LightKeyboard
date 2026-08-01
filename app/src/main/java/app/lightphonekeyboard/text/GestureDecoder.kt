@@ -334,9 +334,12 @@ class GestureDecoder(
          * thousands of times per gesture, and must not build a String to do it.
          */
         private val COMMON_TWO_BITS = IntArray(26).also { rows ->
+            // Exactly the set `decodes two-letter words` pins, plus "hi". Kept in step with that test
+            // deliberately: it is the list of words judged worth swiping, and a word missing from here
+            // is a word that silently stops being reachable.
             for (word in listOf(
-                "of", "to", "in", "is", "on", "by", "it", "or", "be", "at", "as", "an", "we", "us",
-                "if", "my", "do", "no", "he", "up", "so", "am", "me", "go", "hi", "ok",
+                "of", "to", "in", "is", "it", "on", "we", "or", "by", "up", "as", "my", "be",
+                "no", "so", "go", "ok", "me", "he", "us", "an", "if", "do", "at", "am", "ah", "hi",
             )) {
                 rows[word[0] - 'a'] = rows[word[0] - 'a'] or (1 shl (word[1] - 'a'))
             }

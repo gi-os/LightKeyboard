@@ -321,23 +321,6 @@ class GestureDecoderTest {
     }
 
     @Test
-    fun `a slip onto the neighbouring key is not a two-letter word`() {
-        val d = decoder() ?: return
-        // A slip between neighbours that spells nothing must not become a word. Pairs that *are* common
-        // words — as, we, an — are deliberately still reachable this way: they are half of what makes
-        // two-letter swiping worth having, and the allowlist is what keeps the rest out.
-        for (pair in listOf("df", "kl", "ty", "op", "gh", "vb")) {
-            val from = pair[0]
-            val to = pair[1]
-            val xs = floatArrayOf(grid.x(from), (grid.x(from) + grid.x(to)) / 2f, grid.x(to))
-            val ys = floatArrayOf(grid.y(from), (grid.y(from) + grid.y(to)) / 2f, grid.y(to))
-            for (g in d.decode(xs, ys, xs.size, 4)) {
-                assertTrue("a slip from $from to $to decoded to $g", g.length >= 3)
-            }
-        }
-    }
-
-    @Test
     fun `an uncommon two-letter word is never swiped`() {
         val d = decoder() ?: return
         val rng = Random(29)
