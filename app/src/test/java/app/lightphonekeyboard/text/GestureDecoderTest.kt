@@ -335,6 +335,28 @@ class GestureDecoderTest {
         }
     }
 
+    /**
+     * The reported case: swiping i-m gave "jim" every time, not "I'm". "im" is in the dictionary (chat
+     * shorthand, tools/gen_dict.py's EXTRA list) but scored as itself — the rarest entry in the
+     * two-letter tail, by design, because nobody swipes "im" meaning "im". Read as "I'm" it is nowhere
+     * near that rare, and "him"/"ibm"/"jim"/"aim" all sit on or near the same trace with real dictionary
+     * frequency, so scoring "im" on its own entry lost to them every time. See GestureDecoder.IM_LOGF.
+     */
+    @Test
+    fun `swiping i-m gives I'm`() {
+        val d = decoder() ?: return
+        for (seed in 1L..20L) {
+            val (xs, ys, n) = trace("im", Random(seed), sigma = 0.12f)
+            val got = d.decode(xs, ys, n, 4)
+            assertEquals("seed $seed -> $got", "I'm", got.firstOrNull())
+        }
+        // The bare two-point flick the view actually reports for a stroke this short.
+        val xs = floatArrayOf(grid.x('i') + 0.10f, grid.x('m') - 0.10f)
+        val ys = floatArrayOf(grid.y('i'), grid.y('m'))
+        val got = d.decode(xs, ys, 2, 4)
+        assertEquals("two-point im -> $got", "I'm", got.firstOrNull())
+    }
+
     @Test
     fun `respects the start and end keys`() {
         val d = decoder() ?: return

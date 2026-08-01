@@ -36,13 +36,17 @@ import kotlin.math.sqrt
  *     the latency and the drift-cancellation.
  *   - Touches are tracked per pointer, so overlapping/rolling presses each register.
  *
- * Swipe DOWN anywhere on the keyboard closes it ([Listener.onDismiss]).
+ * Holding still and then swiping DOWN closes the keyboard ([Listener.onDismiss]).
  *
  * Dragging ACROSS the letters is swipe typing: the path is collected in key units and handed to the
  * host as [Listener.onGesture], which decodes it to a word. The two gestures don't collide because
- * dismiss requires clearly *downward* motion and is recognised within about 30dp, well before a word
- * trace has gone anywhere; see [onTouchEvent]. The character the first key committed on touch-down is
- * retracted the moment either gesture is recognised, so neither leaves a stray letter behind.
+ * dismiss is only even considered once the finger has sat still for [DISMISS_HOLD_MS] — a real word
+ * trace is already past its 22dp trace-start distance well before that clock runs out, so it never
+ * reaches the dismiss check at all; see [onTouchEvent]. Requiring the hold is what separates them:
+ * without it, a swipe that happens to start moving mostly downward (tracing "no" or "on", say) races
+ * the same two thresholds a deliberate dismiss does, and which one wins depends on touch-sample timing
+ * rather than what the user meant. The character the first key committed on touch-down is retracted
+ * the moment either gesture is recognised, so neither leaves a stray letter behind.
  *
  * Future: Apple-style dynamic target resizing (silently growing the hit rects of likely next letters
  * from a language model while the visible keys stay put) would build on this tiled-rect foundation.
@@ -293,6 +297,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private val pressed = HashMap<Int, PlacedKey>()   // pointerId -> key, for the pressed highlight
     private var downX = 0f
     private var downY = 0f
+    private var downTime = 0L   // ACTION_DOWN's event time, for the dismiss hold in onTouchEvent
     private var firstPointerId = -1
     private var firstKeyRetractable = false   // did the gesture's first tap commit a retractable char?
     private var dismissedThisGesture = false
@@ -667,6 +672,7 @@ class LightKeyboardView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x
                 downY = ev.y
+                downTime = ev.eventTime
                 dismissedThisGesture = false
                 firstPointerId = ev.getPointerId(0)
                 velocityTracker?.recycle()
@@ -717,17 +723,15 @@ class LightKeyboardView @JvmOverloads constructor(
                         val dx = x - downX
                         velocityTracker?.computeCurrentVelocity(1000)
                         val vy = velocityTracker?.getYVelocity(firstPointerId) ?: 0f
-                        // Recognise the dismiss swipe as early as possible so the char committed on
-                        // key-down is retracted almost immediately, instead of lingering as a flash of a
-                        // letter: a short downward drag (30dp) OR a quick downward flick both count, as
-                        // long as the motion is clearly vertical.
-                        //
-                        // This is checked BEFORE the word-trace test, and it demands clearly vertical
-                        // downward motion, so the two gestures stay separable: a word trace runs mostly
-                        // across the rows, and one that genuinely starts by diving straight down was a
-                        // dismiss as far as anyone watching is concerned.
+                        // A short downward drag (30dp) OR a quick downward flick both count, as long as
+                        // the motion is clearly vertical — but only once [held] says the finger paused
+                        // first. Swipe typing starts moving within a few milliseconds of touch-down; a
+                        // deliberate dismiss doesn't, so gating on elapsed time rather than reordering
+                        // the checks is what keeps a fast "no" or "on" trace from racing this branch and
+                        // losing the race depending on how the touch samples happened to land.
                         val verticalDrag = dy > abs(dx) * 1.5f
-                        if (verticalDrag && (dy > dpf(30) || (vy > dpf(900) && dy > dpf(14)))) {
+                        val held = ev.eventTime - downTime >= DISMISS_HOLD_MS
+                        if (held && verticalDrag && (dy > dpf(30) || (vy > dpf(900) && dy > dpf(14)))) {
                             dismissedThisGesture = true
                             stopBackspaceRepeat()
                             // The first tap already committed a char on down; retract it so the swipe
@@ -1196,6 +1200,10 @@ class LightKeyboardView @JvmOverloads constructor(
     // Longer than Android's 500ms default. Forgetting a word is destructive and the strip's slots are
     // narrow, so a hold has to be unmistakably a hold rather than a slow, badly aimed tap.
     private val SUGGESTION_HOLD_MS = 650L
+    // How long the finger must sit still before a downward swipe is even considered for dismiss — see
+    // the class doc and onTouchEvent. Comfortably past a real trace's start (single-digit milliseconds
+    // at any ordinary swipe speed), short enough that a deliberate close doesn't feel delayed.
+    private val DISMISS_HOLD_MS = 180L
 
     private fun dpf(v: Int): Float = v * resources.displayMetrics.density
     private fun dpf(v: Float): Float = v * resources.displayMetrics.density

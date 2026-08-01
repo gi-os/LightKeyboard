@@ -109,9 +109,18 @@ class GestureDecoder(
         // ("way"/"wag", "sun"/"sum") are settled by frequency alone, and after "on my" the corpus has an
         // opinion worth more than that. Held to the correction bound, not the strip's, because the best
         // reading is committed on lift without being asked.
-        return ContextRanker.rerank(
+        val words = ContextRanker.rerank(
             heap.words(dict, user), ctx.left, context, limit, ContextRanker.MAX_SHIFT_CORRECTION,
         )
+        // The bundled dictionary has no apostrophes in it at all — contractions are stored plain
+        // ("im", "dont", "cant"; see tools/gen_dict.py's EXTRA list) because nobody swipes or types an
+        // apostrophe. So nothing above can ever produce "I'm" as text; "im" is what comes out, and it
+        // needs the capital a dictionary lookup can't supply — the shift state only knows a *sentence*
+        // is starting, and the first person is capital mid-sentence too. See `scan` for why "im" is
+        // reachable here at all: on its own it is the rarest tail end of the two-letter list, kept
+        // unreachable like the rest of that tail: this is the one exception, for the one word that
+        // stands in for one of the commonest words there is.
+        return if (words.contains(IM)) words.map { if (it == IM) "I'm" else it } else words
     }
 
     /** Score every candidate in [source] that survives pruning. Shared by the bundled and user lists. */
@@ -137,8 +146,13 @@ class GestureDecoder(
             // already curated to what a Scrabble dictionary allows, but its tail — ax, yo, pa, un, im,
             // oh, lo, aw, re, id, ma, ex — is rarer than the accidental two-key drag it would be
             // answering, so admitting it trades one wrong word for another. A penalty was not enough;
-            // these have to be unreachable.
-            if (len == 2 && !isCommonTwo(source, i)) continue
+            // these have to be unreachable — except "im", let back in below on different terms: not
+            // because it is common on its own (it is the rarest word in the tail, per the dictionary's
+            // own -13.0 floor for it — see IM_LOGF), but because it is the only way to reach "I'm",
+            // which the dictionary doesn't store at all (no apostrophes in it — see `decode`). Scored
+            // on IM_LOGF instead of its real entry so it competes as what it actually represents.
+            val isIm = len == 2 && source.charAt(i, 0) == 'i' && source.charAt(i, 1) == 'm'
+            if (len == 2 && !isCommonTwo(source, i) && !isIm) continue
             if (bit(source.charAt(i, 0)) and startMask == 0) continue
             if (bit(source.charAt(i, len - 1)) and endMask == 0) continue
             if (source.mask(i) and corridor.inv() != 0) continue        // a letter the path never neared
@@ -154,9 +168,10 @@ class GestureDecoder(
             if (forgotten.contains(source, i)) continue
             val excess = (pathLength - templateLength).coerceAtLeast(0f)
             val shortWord = if (len == 2) SHORT_PENALTY else 0f
+            val freq = if (isIm) IM_LOGF else source.logFreq(i)
             heap.offer(
                 tag, i,
-                source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess - shortWord,
+                freq - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess - shortWord,
             )
         }
     }
@@ -344,6 +359,24 @@ class GestureDecoder(
                 rows[word[0] - 'a'] = rows[word[0] - 'a'] or (1 shl (word[1] - 'a'))
             }
         }
+
+        /** The one two-letter reading `scan` admits without being in [COMMON_TWO_BITS]. See `scan`. */
+        private const val IM = "im"
+
+        /**
+         * What "im" is scored at when read as "I'm", in place of its real dictionary entry.
+         *
+         * The dictionary gives "im" -13.0 — tools/gen_dict.py's flat floor for chat shorthand no
+         * speller lists, calibrated for "im" typed as itself, which is close to never. Read as "I'm" it
+         * is nowhere near that rare, so scoring it on the floor loses every time to whatever plausible
+         * three-letter word sits near the same trace: "him" (-7.86), "ibm" (-9.56), "jim" (-9.60), aim
+         * (-9.89) all beat -13.0 comfortably, which is the bug this constant fixes ("im" swiping to
+         * "jim"). -5.5 sits above all of them with room to spare, in the "he"/"we"/"my"/"us" band —
+         * plausible company for one of the commonest contractions in typed English, and short of
+         * true top-tier words like "is" or "it" so it doesn't start winning traces that aren't its own.
+         * Figures are from the bundled app/src/main/res/raw/words.bin, not guessed.
+         */
+        private const val IM_LOGF = -5.5f
 
         const val MIN_WORD = 2
         /** The floor when the stroke started and finished on the same key — see [decode]. */
