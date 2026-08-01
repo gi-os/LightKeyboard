@@ -323,10 +323,10 @@ class GestureDecoderTest {
     @Test
     fun `a slip onto the neighbouring key is not a two-letter word`() {
         val d = decoder() ?: return
-        // Two different keys, so the twoKeys test passes, but only just — the finger has travelled the
-        // gap between neighbours and no further, which is what an unintended drag looks like. This is
-        // the reported "sometimes it'll trigger as a swipe even though I didn't mean it".
-        for (pair in listOf("as", "df", "kl", "ty", "op")) {
+        // A slip between neighbours that spells nothing must not become a word. Pairs that *are* common
+        // words — as, we, an — are deliberately still reachable this way: they are half of what makes
+        // two-letter swiping worth having, and the allowlist is what keeps the rest out.
+        for (pair in listOf("df", "kl", "ty", "op", "gh", "vb")) {
             val from = pair[0]
             val to = pair[1]
             val xs = floatArrayOf(grid.x(from), (grid.x(from) + grid.x(to)) / 2f, grid.x(to))

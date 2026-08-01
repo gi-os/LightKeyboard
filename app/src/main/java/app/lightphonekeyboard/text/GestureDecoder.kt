@@ -98,19 +98,7 @@ class GestureDecoder(
         // deliberately generous (1.6 key units) and a drifted tap satisfies both of them with the same
         // letter. Only two-letter readings are gated on it: a three-letter word has a corner to prove
         // itself with, and a stroke this short has nothing but its two ends.
-        val first = g.nearest(ux[0], uy[0])
-        val last = g.nearest(ux[SAMPLES - 1], uy[SAMPLES - 1])
-        var twoKeys = first != last
-        // Two different keys is not enough when they are neighbours, which is the case a stray finger
-        // actually produces. Reaching the next key along covers 1.0 key units, or about 1.12
-        // diagonally, and MIN_PATH_LENGTH sits at 1.2 — so a slip clears both tests and reads as a
-        // deliberate stroke. A neighbour pair has to be drawn past itself to be believed; further-apart
-        // keys need no extra proof, since the distance is the proof.
-        if (twoKeys && first != null && last != null &&
-            g.distance(first, last) <= ADJACENT_KEYS && pathLength < ADJACENT_MIN_PATH
-        ) {
-            twoKeys = false
-        }
+        val twoKeys = g.nearest(ux[0], uy[0]) != g.nearest(ux[SAMPLES - 1], uy[SAMPLES - 1])
         val shortest = if (twoKeys) MIN_WORD else MIN_WORD_ONE_KEY
 
         val heap = TopK(limit)
@@ -141,7 +129,11 @@ class GestureDecoder(
         for (i in source.lengthRange(shortest, Corrector.MAX_LENGTH)) {
             if (!source.isAlphaOnly(i)) continue                        // can't trace an apostrophe
             val len = source.length(i)
-            // Two letters only if it is one of the common ones. The dictionary's two-letter list is
+            // Two letters only if it is one of the common ones. This allowlist is the whole of the
+            // strictness: an extra distance requirement for neighbouring keys was tried and reverted,
+            // because half the words worth swiping are neighbour pairs — we, as, an, am, or, up — and
+            // making those harder is the opposite of the point. Naming the words is what separates a
+            // deliberate "as" from a slip that happens to land on s. The dictionary's two-letter list is
             // already curated to what a Scrabble dictionary allows, but its tail — ax, yo, pa, un, im,
             // oh, lo, aw, re, id, ma, ex — is rarer than the accidental two-key drag it would be
             // answering, so admitting it trades one wrong word for another. A penalty was not enough;
@@ -349,18 +341,6 @@ class GestureDecoder(
                 rows[word[0] - 'a'] = rows[word[0] - 'a'] or (1 shl (word[1] - 'a'))
             }
         }
-
-        /**
-         * Two key centres this close count as neighbours. Same-row centres are 1.0 apart and diagonal
-         * ones about 1.12, so this covers both without reaching the key beyond.
-         */
-        private const val ADJACENT_KEYS = 1.25f
-
-        /**
-         * How far a stroke between neighbouring keys must travel before it can read as two letters.
-         * Comfortably past the ~1.1 that merely arriving at the neighbour produces.
-         */
-        private const val ADJACENT_MIN_PATH = 1.9f
 
         const val MIN_WORD = 2
         /** The floor when the stroke started and finished on the same key — see [decode]. */
