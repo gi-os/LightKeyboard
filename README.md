@@ -6,7 +6,7 @@ bundled-dictionary autocorrect.
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.0.13** (tag `v1.0.13`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.0.21** (tag `v1.0.21`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -149,6 +149,19 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v1.0.21** (2026-08-01) — **Swiping i-m gives "I'm", not "jim"; swipe-down-to-close needs a hold
+  first.** "im" was reachable in the dictionary but scored on its own entry, which
+  tools/gen_dict.py deliberately floors at -13.0 for chat shorthand nobody actually types — read as
+  "I'm" it isn't nearly that rare, so the floor lost every time to "jim"/"kim", whose paths the same
+  trace also fits. Scored instead at a constant standing in for what "I'm" is actually worth, checked
+  against the shipped dictionary and grid before shipping rather than guessed. Separately: dismiss now
+  waits for the finger to sit still before a downward swipe counts, so a fast trace that happens to
+  start moving down (tracing "no" or "on") no longer races the close gesture and loses depending on
+  touch-sample timing.
+- **v1.0.19** (2026-08-01) — Reverted an in-progress attempt at swipeable contractions that didn't
+  land cleanly (see v1.0.21 above for the version that did).
+- **v1.0.16** (2026-08-01) — The two-letter allowlist brought back in step with what the tests
+  actually pin, plus "hi".
 - **v1.0.13** (2026-07-31) — **The commonest two-letter words are pinned by a test.** "to", "it", "is"
   and "my" already decoded first after v1.0.11 — measured across twenty seeds, three trace speeds and
   the bare two-point flick the view reports for a quick stroke, every one of them wins outright. But the
