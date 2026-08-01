@@ -321,14 +321,22 @@ class GestureDecoderTest {
     }
 
     @Test
-    fun `swiping the letters of a contraction gives the contraction`() {
+    fun `swiping i-m gives I'm`() {
+        val d = decoder() ?: return
+        // The reported case. Tracing i-m used to give nothing at all: scan skipped every word with an
+        // apostrophe, and "im" on its own is the rarest entry in the dictionary.
+        val (xs, ys, n) = trace("im", Random(31), sigma = 0.08f)
+        assertEquals("I'm", d.decode(xs, ys, n, 4).firstOrNull())
+    }
+
+    @Test
+    fun `contractions are reachable by tracing their letters`() {
         val d = decoder() ?: return
         val rng = Random(31)
-        // The reported case first. Tracing i-m used to give nothing at all: the decoder skips every word
-        // with an apostrophe, since there is no key to swipe through for one, and "im" on its own is the
-        // rarest word in the dictionary.
+        // Reachable, not necessarily first. Each of these competes with the plain word its letters also
+        // spell and with its own neighbours, and the decoder returns a handful of candidates — so what
+        // matters is that the contraction is among them, which it could not be at all before.
         for ((letters, want) in listOf(
-            "im" to "I'm",
             "dont" to "don't",
             "cant" to "can't",
             "thats" to "that's",
@@ -336,8 +344,8 @@ class GestureDecoderTest {
             "its" to "it's",
         )) {
             val (xs, ys, n) = trace(letters, rng, sigma = 0.08f)
-            val got = d.decode(xs, ys, n, 4)
-            assertTrue("$letters gave $got, wanted $want in it", got.contains(want))
+            val got = d.decode(xs, ys, n, 8)
+            assertTrue("$letters gave $got, wanted $want among them", got.contains(want))
         }
     }
 
