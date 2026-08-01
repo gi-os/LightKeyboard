@@ -321,6 +321,38 @@ class GestureDecoderTest {
     }
 
     @Test
+    fun `a slip onto the neighbouring key is not a two-letter word`() {
+        val d = decoder() ?: return
+        // Two different keys, so the twoKeys test passes, but only just — the finger has travelled the
+        // gap between neighbours and no further, which is what an unintended drag looks like. This is
+        // the reported "sometimes it'll trigger as a swipe even though I didn't mean it".
+        for (pair in listOf("as", "df", "kl", "ty", "op")) {
+            val from = pair[0]
+            val to = pair[1]
+            val xs = floatArrayOf(grid.x(from), (grid.x(from) + grid.x(to)) / 2f, grid.x(to))
+            val ys = floatArrayOf(grid.y(from), (grid.y(from) + grid.y(to)) / 2f, grid.y(to))
+            for (g in d.decode(xs, ys, xs.size, 4)) {
+                assertTrue("a slip from $from to $to decoded to $g", g.length >= 3)
+            }
+        }
+    }
+
+    @Test
+    fun `an uncommon two-letter word is never swiped`() {
+        val d = decoder() ?: return
+        val rng = Random(29)
+        // In the dictionary, and so typable, but rarer than the accidental drag that would produce
+        // them — deliberately unreachable by gesture.
+        for (word in listOf("ax", "yo", "pa", "un", "oh", "lo")) {
+            val (xs, ys, n) = trace(word, rng, sigma = 0.06f, step = 0.20f)
+            assertTrue(
+                "$word should not be swipeable",
+                d.decode(xs, ys, n, 4).none { it == word },
+            )
+        }
+    }
+
+    @Test
     fun `respects the start and end keys`() {
         val d = decoder() ?: return
         val rng = Random(3)
