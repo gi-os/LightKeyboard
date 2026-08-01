@@ -109,8 +109,12 @@ class GestureDecoder(
         // ("way"/"wag", "sun"/"sum") are settled by frequency alone, and after "on my" the corpus has an
         // opinion worth more than that. Held to the correction bound, not the strip's, because the best
         // reading is committed on lift without being asked.
-        return ContextRanker.rerank(
-            heap.words(dict, user), ctx.left, context, limit, ContextRanker.MAX_SHIFT_CORRECTION,
+        // Apostrophe words come straight out of the dictionary, traced by their letters — see `scan`.
+        // All that is left is the capital in "I'm", which no dictionary lookup can supply.
+        return Contractions.apply(
+            ContextRanker.rerank(
+                heap.words(dict, user), ctx.left, context, limit, ContextRanker.MAX_SHIFT_CORRECTION,
+            ),
         )
     }
 
@@ -127,8 +131,16 @@ class GestureDecoder(
         heap: TopK,
     ) {
         for (i in source.lengthRange(shortest, Corrector.MAX_LENGTH)) {
-            if (!source.isAlphaOnly(i)) continue                        // can't trace an apostrophe
             val len = source.length(i)
+            // A word with an apostrophe is traced by its letters — `dont` for "don't", `im` for "I'm" —
+            // because there is no key to swipe through for the apostrophe. These used to be skipped
+            // outright, which made some of the commonest words in English unswipeable. Everything below
+            // therefore works on letters: the first and last *letter*, the letters-only corridor mask,
+            // and a letter count that decides whether the two-letter rules apply.
+            val letters = letterCount(source, i, len)
+            if (letters < shortest) continue
+            val firstLetter = firstLetter(source, i, len)
+            val lastLetter = lastLetter(source, i, len)
             // Two letters only if it is one of the common ones. This allowlist is the whole of the
             // strictness: an extra distance requirement for neighbouring keys was tried and reverted,
             // because half the words worth swiping are neighbour pairs — we, as, an, am, or, up — and
@@ -138,10 +150,12 @@ class GestureDecoder(
             // oh, lo, aw, re, id, ma, ex — is rarer than the accidental two-key drag it would be
             // answering, so admitting it trades one wrong word for another. A penalty was not enough;
             // these have to be unreachable.
-            if (len == 2 && !isCommonTwo(source, i)) continue
-            if (bit(source.charAt(i, 0)) and startMask == 0) continue
-            if (bit(source.charAt(i, len - 1)) and endMask == 0) continue
-            if (source.mask(i) and corridor.inv() != 0) continue        // a letter the path never neared
+            if (letters == 2 && !isCommonTwo(firstLetter, lastLetter)) continue
+            if (bit(firstLetter) and startMask == 0) continue
+            if (bit(lastLetter) and endMask == 0) continue
+            // The apostrophe's own bit is cleared before the comparison: it is not a letter the path
+            // could ever have neared, so leaving it in would reject every contraction.
+            if (source.mask(i) and ALPHA_BITS and corridor.inv() != 0) continue
 
             val n = buildTemplate(g, source, i, len)
             if (n < 2) continue
@@ -153,7 +167,7 @@ class GestureDecoder(
             // Last, so a forgotten word costs a String only once a trace has actually landed near it.
             if (forgotten.contains(source, i)) continue
             val excess = (pathLength - templateLength).coerceAtLeast(0f)
-            val shortWord = if (len == 2) SHORT_PENALTY else 0f
+            val shortWord = if (letters == 2) SHORT_PENALTY else 0f
             heap.offer(
                 tag, i,
                 source.logFreq(i) - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess - shortWord,
@@ -163,10 +177,31 @@ class GestureDecoder(
 
     private fun bit(c: Char): Int = if (c in 'a'..'z') 1 shl (c - 'a') else 0
 
-    /** Whether the two-letter word at [i] is one a swipe may produce. */
-    private fun isCommonTwo(source: Dictionary, i: Int): Boolean {
-        val a = source.charAt(i, 0)
-        val b = source.charAt(i, 1)
+    /** How many of the word's characters a finger could actually trace. */
+    private fun letterCount(source: Dictionary, wi: Int, len: Int): Int {
+        var n = 0
+        for (k in 0 until len) if (source.charAt(wi, k) != '\'') n++
+        return n
+    }
+
+    private fun firstLetter(source: Dictionary, wi: Int, len: Int): Char {
+        for (k in 0 until len) {
+            val c = source.charAt(wi, k)
+            if (c != '\'') return c
+        }
+        return ' '
+    }
+
+    private fun lastLetter(source: Dictionary, wi: Int, len: Int): Char {
+        for (k in len - 1 downTo 0) {
+            val c = source.charAt(wi, k)
+            if (c != '\'') return c
+        }
+        return ' '
+    }
+
+    /** Whether a two-letter reading is one a swipe may produce. */
+    private fun isCommonTwo(a: Char, b: Char): Boolean {
         if (a !in 'a'..'z' || b !in 'a'..'z') return false
         return COMMON_TWO_BITS[a - 'a'] and (1 shl (b - 'a')) != 0
     }
@@ -181,6 +216,9 @@ class GestureDecoder(
         var last = ' '
         for (k in 0 until len) {
             val c = source.charAt(wi, k)
+            // Skipped rather than refused: a gesture traces "don't" as `dont`, because there is no key
+            // to swipe through for an apostrophe. See `letterCount`.
+            if (c == '\'') continue
             if (c == last) continue
             if (!g.has(c)) return 0          // letter missing from this layout
             kx[n] = g.x(c)
@@ -340,10 +378,16 @@ class GestureDecoder(
             for (word in listOf(
                 "of", "to", "in", "is", "it", "on", "we", "or", "by", "up", "as", "my", "be",
                 "no", "so", "go", "ok", "me", "he", "us", "an", "if", "do", "at", "am", "ah", "hi",
+                // Not for its own sake — "im" is the rarest entry in the dictionary. It is here because
+                // Contractions turns it into "I'm", which is one of the commonest words there is.
+                "im",
             )) {
                 rows[word[0] - 'a'] = rows[word[0] - 'a'] or (1 shl (word[1] - 'a'))
             }
         }
+
+        /** The 26 letter bits, i.e. every bit a traced path can possibly light. */
+        private const val ALPHA_BITS = (1 shl 26) - 1
 
         const val MIN_WORD = 2
         /** The floor when the stroke started and finished on the same key — see [decode]. */
