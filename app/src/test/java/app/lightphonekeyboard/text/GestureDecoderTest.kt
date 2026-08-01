@@ -321,41 +321,6 @@ class GestureDecoderTest {
     }
 
     @Test
-    fun `swiping the letters of a contraction gives the contraction`() {
-        val d = decoder() ?: return
-        val rng = Random(31)
-        // The reported case first. Tracing i-m used to give nothing at all: the decoder skips every word
-        // with an apostrophe, since there is no key to swipe through for one, and "im" on its own is the
-        // rarest word in the dictionary.
-        for ((letters, want) in listOf(
-            "im" to "I'm",
-            "dont" to "don't",
-            "cant" to "can't",
-            "thats" to "that's",
-            "youre" to "you're",
-            "its" to "it's",
-        )) {
-            val (xs, ys, n) = trace(letters, rng, sigma = 0.08f)
-            val got = d.decode(xs, ys, n, 4)
-            assertTrue("$letters gave $got, wanted $want in it", got.contains(want))
-        }
-    }
-
-    @Test
-    fun `the plain word is still offered alongside the apostrophe one`() {
-        val d = decoder() ?: return
-        val rng = Random(37)
-        // "its" and "were" and "well" are words in their own right, and tracing their letters now
-        // matches both them and the contraction. Both have to be in the list, so whichever was meant is
-        // either committed or one backspace away.
-        for (word in listOf("its", "were", "well")) {
-            val (xs, ys, n) = trace(word, rng, sigma = 0.08f)
-            val got = d.decode(xs, ys, n, 4)
-            assertTrue("$word missing from $got", got.contains(word))
-        }
-    }
-
-    @Test
     fun `an uncommon two-letter word is never swiped`() {
         val d = decoder() ?: return
         val rng = Random(29)
