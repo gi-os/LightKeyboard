@@ -1,0 +1,39 @@
+# Compile and test, and publish nothing.
+#
+# A push to `main` builds, signs and releases (see build.yml), so until now there was nowhere to
+# find out whether something compiles without also putting it on the phone. This runs on every
+# other branch and does exactly that: no keystore, no APK, no release. Same shape as
+# gi-os/LightCamera's and gi-os/LightChat's check.yml.
+name: Check
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Debug only, and with no keystore in the job at all. The release build reads
+      # signing-fingerprint.txt and the decoded keystore; neither is present here, and neither
+      # should be — a workflow that can sign is a workflow that can ship.
+      - name: Compile
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace

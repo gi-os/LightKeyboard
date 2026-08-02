@@ -391,6 +391,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             keepAsTyped(item.word)
             return
         }
+        if (item.verbatim) {
+            commitVerbatim(item.word)
+            return
+        }
         val word = item.word
         val ic = currentInputConnection ?: return
 
@@ -418,6 +422,31 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val cased = if (original.isNotEmpty()) applyCase(original, word) else word
         val lead = if (original.isEmpty() && needsLeadingSpace()) " " else ""
         ic.commitText("$lead$cased ", 1)
+        ic.endBatchEdit()
+        refreshSuggestions()
+    }
+
+    /**
+     * A login code tapped in the strip: committed exactly, with nothing added and nothing learned.
+     *
+     * Three things the ordinary suggestion path does are all wrong here, and each of them is a bug
+     * the user would have to spot. No case coercion — a code is opaque and `G4T7QX` is not `g4t7qx`.
+     * No trailing space — the field it is going into expects six characters and stops accepting at
+     * six, so the space either lands in the next box or is silently dropped and looks like the tap
+     * failed. And it is never learned into the user's dictionary: a code is worth exactly one use,
+     * and teaching the corrector six digits it will then propose forever is the opposite of helpful.
+     *
+     * The partial word at the cursor is still replaced. Somebody who typed the first two digits and
+     * then noticed the strip means to end up with the code, not with the digits and the code.
+     */
+    private fun commitVerbatim(code: String) {
+        val ic = currentInputConnection ?: return
+        val original = trailingWord()
+        clearUndo()
+        clearGesture()
+        ic.beginBatchEdit()
+        if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
+        ic.commitText(code, 1)
         ic.endBatchEdit()
         refreshSuggestions()
     }
@@ -498,6 +527,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      */
     override fun onSuggestionForget(item: StripItem) {
         if (item.literal) return   // the user's own spelling; there is nothing learned to remove
+        // A login code was never learned, so there is nothing to forget — and adding it to the
+        // forgotten list would pin six digits in a file that outlives the code by months.
+        if (item.verbatim) return
         forgetWord(item.word)
         refreshSuggestions()
     }
@@ -553,8 +585,19 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val before = textBeforeCursor(CONTEXT_LOOKBACK)
         val prefix = trailingWordOf(before)
         if (prefix.isEmpty()) {
+            // **Only with nothing typed**, which is deliberate and is the whole of the policy.
+            // That is the moment the code is wanted — a field has just been focused and is empty —
+            // and it is the one moment the strip has nothing better to say. Keeping it out of the
+            // strip once typing starts means autocorrect's ranking is never competing with a six
+            // digit number for the slot the user's thumb already knows the position of.
+            val code = LoginCode.current(this)
             val keep = keepableWord(before, s)
-            kb.setSuggestions(if (keep == null) emptyList() else listOf(StripItem(keep, literal = true)))
+            kb.setSuggestions(
+                buildList {
+                    if (code != null) add(StripItem(code, verbatim = true))
+                    if (keep != null) add(StripItem(keep, literal = true))
+                },
+            )
             return
         }
         kb.setSuggestions(s.stripFor(prefix, SUGGESTION_SLOTS, contextOf(before, prefix)))

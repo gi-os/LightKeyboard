@@ -5,8 +5,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Package visibility (Android 11+) for speech recognizer components. -->
+    <!-- Package visibility (Android 11+) for speech recognizer components, and for LightChat,
+         whose provider holds the one-time login code the strip pins (see LoginCode). Without the
+         package entry the ContentResolver cannot see that authority at all and the lookup fails
+         the same way it does on a phone where LightChat isn't installed — which is to say
+         silently, and indistinguishably from "no code has arrived". -->
     <queries>
+        <package android:name="com.gios.lightchat" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>

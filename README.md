@@ -59,7 +59,13 @@ Optional settings, all in the app itself:
   against the word before them. Tap one to use it. **Hold** one to forget it — the keyboard stops
   offering that word, from the bundled dictionary as well as your own list. The leftmost slot is the
   *keep-as-typed* slot (iOS-style): shown in quotes, tapping it commits your literal spelling and learns
-  the word. It shows up whenever the word can't grow any further — including the moment after you finish
+  the word. **A one-time login code lands in the first slot**, pinned there from
+  [LightChat](https://github.com/gi-os/LightChat) for the three minutes it is worth anything, and only
+  while nothing has been typed — the moment a field is focused and empty, which is when the code is
+  wanted and the one moment the strip has nothing better to say. Tapping it commits the code exactly:
+  no case coercion, no trailing space, and nothing learned into your dictionary. On a phone without
+  LightChat there is simply never one.
+  It shows up whenever the word can't grow any further — including the moment after you finish
   an unknown word, and after autocorrect has replaced one, where tapping it puts your spelling back.
   Off by default because the LightOS keyboard has no suggestion bar of its own, and turning this on
   makes the keyboard one strip taller everywhere.
@@ -149,6 +155,20 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v1.0.x** (2026-08-01) — **A login code arrives in the strip, and closing needs a longer hold.**
+  A verification code arrives in one app and is wanted in another, and the walk between them is done
+  from memory in the one moment you cannot afford to mistype. iOS puts it above the keys; Android does
+  it through autofill and `SmsRetriever`, both of which need Play Services and a real SMS app — and on
+  this phone the codes arrive over BlueBubbles rather than the carrier, so neither would ever see them.
+  The keyboard is the only surface present in both apps, so it reads the code from LightChat's provider
+  and pins it, in the empty-prefix case only. Committed verbatim through a new `StripItem.verbatim`
+  flag rather than a special case in the IME, because every ordinary suggestion path does two things
+  that are wrong for a code: it takes the case of what was typed before it (rewriting `G4T7QX` as
+  `g4t7qx`) and it appends a trailing space (a seventh character in a six-character field). Holding it
+  does nothing, since nothing was learned. Separately: **the hold before a downward swipe closes the
+  keyboard goes from 180ms to 500ms.** 180 was tuned against swipe typing and not against the hand —
+  it is shorter than an unhurried tap, so a slow press near the bottom row that drifted down as the
+  thumb rolled off could clear the hold and the 30dp together and close the keyboard mid-word.
 - **v1.0.21** (2026-08-01) — **Swiping i-m gives "I'm", not "jim"; swipe-down-to-close needs a hold
   first.** "im" was reachable in the dictionary but scored on its own entry, which
   tools/gen_dict.py deliberately floors at -13.0 for chat shorthand nobody actually types — read as

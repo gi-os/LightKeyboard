@@ -214,8 +214,16 @@ data class WordContext(
  * [literal] separates "the word you typed, keep it and learn it" from an ordinary suggestion. The two
  * look different (the literal is quoted) and do different things when tapped, and the difference is
  * decided here in the pure layer rather than re-derived by comparing strings in the IME.
+ *
+ * [verbatim] is the third kind: text that is not a word at all and must be committed exactly — the
+ * login code pinned from LightChat. It has to be its own flag rather than a special case in the IME,
+ * because every ordinary path does two things to a suggestion that are wrong for a code. It takes the
+ * case of whatever was typed before it, which would rewrite `G4T7QX` as `g4t7qx`; and it appends a
+ * trailing space to start the next word, which in a six-character verification field is a seventh
+ * character the user then has to notice and delete.
  */
 data class StripItem(
     val word: String,
     val literal: Boolean = false,
+    val verbatim: Boolean = false,
 )

@@ -186,9 +186,10 @@ class LightKeyboardView @JvmOverloads constructor(
     private val suggestionHold = Runnable {
         val slot = pressedSuggestion
         val item = if (slot >= 0) suggestionAt(slot) else null
-        // The literal is the word the user just typed. There is nothing learned to remove, and eating
-        // the tap on it would break the one slot whose whole job is to be tapped.
-        if (item != null && !item.literal) {
+        // The literal is the word the user just typed, and the verbatim slot is a login code that
+        // was never learned. Neither has anything to remove, and eating the tap on either would
+        // break a slot whose whole job is to be tapped.
+        if (item != null && !item.literal && !item.verbatim) {
             suggestionForgotten = true
             pressedSuggestion = -1
             invalidate()
@@ -1202,8 +1203,13 @@ class LightKeyboardView @JvmOverloads constructor(
     private val SUGGESTION_HOLD_MS = 650L
     // How long the finger must sit still before a downward swipe is even considered for dismiss — see
     // the class doc and onTouchEvent. Comfortably past a real trace's start (single-digit milliseconds
-    // at any ordinary swipe speed), short enough that a deliberate close doesn't feel delayed.
-    private val DISMISS_HOLD_MS = 180L
+    // at any ordinary swipe speed).
+    //
+    // Raised from 180ms, which was tuned against swipe typing and not against the hand. 180ms is
+    // shorter than an unhurried tap, so a slow press near the bottom row that drifted down as the
+    // thumb rolled off could clear the hold and the 30dp together and close the keyboard mid-word.
+    // Half a second is past any tap and still inside what reads as one gesture rather than a wait.
+    private val DISMISS_HOLD_MS = 500L
 
     private fun dpf(v: Int): Float = v * resources.displayMetrics.density
     private fun dpf(v: Float): Float = v * resources.displayMetrics.density
