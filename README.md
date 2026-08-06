@@ -60,11 +60,11 @@ Optional settings, all in the app itself:
   offering that word, from the bundled dictionary as well as your own list. The leftmost slot is the
   *keep-as-typed* slot (iOS-style): shown in quotes, tapping it commits your literal spelling and learns
   the word. **A one-time login code lands in the first slot**, pinned there from
-  [LightChat](https://github.com/gi-os/LightChat) for the three minutes it is worth anything, and only
+  [BrightChat](https://github.com/gi-os/BrightChat) for the three minutes it is worth anything, and only
   while nothing has been typed — the moment a field is focused and empty, which is when the code is
   wanted and the one moment the strip has nothing better to say. Tapping it commits the code exactly:
   no case coercion, no trailing space, and nothing learned into your dictionary. On a phone without
-  LightChat there is simply never one.
+  BrightChat there is simply never one.
   It shows up whenever the word can't grow any further — including the moment after you finish
   an unknown word, and after autocorrect has replaced one, where tapping it puts your spelling back.
   Off by default because the LightOS keyboard has no suggestion bar of its own, and turning this on
@@ -160,7 +160,7 @@ it up on its own. A push can bundle more than one commit; only the push's final 
   from memory in the one moment you cannot afford to mistype. iOS puts it above the keys; Android does
   it through autofill and `SmsRetriever`, both of which need Play Services and a real SMS app — and on
   this phone the codes arrive over BlueBubbles rather than the carrier, so neither would ever see them.
-  The keyboard is the only surface present in both apps, so it reads the code from LightChat's provider
+  The keyboard is the only surface present in both apps, so it reads the code from BrightChat's provider
   and pins it, in the empty-prefix case only. Committed verbatim through a new `StripItem.verbatim`
   flag rather than a special case in the IME, because every ordinary suggestion path does two things
   that are wrong for a code: it takes the case of what was typed before it (rewriting `G4T7QX` as
