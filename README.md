@@ -3,6 +3,17 @@
 A clone of the Light Phone 3's built-in keyboard, for any app — with swipe typing and a
 bundled-dictionary autocorrect.
 
+## Install via BrightMarket
+
+<p align="center">
+  <img src="https://gi-os.github.io/brightmarket-index/assets/brightmarket-qr.png" alt="Scan to open BrightMarket" width="180" />
+</p>
+
+Scan the code above, or visit
+**[gi-os.github.io/brightmarket-index/browse.html](https://gi-os.github.io/brightmarket-index/browse.html)**, to install
+and keep this app updated through **BrightMarket** — no Play Store, no PC
+required.
+
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
