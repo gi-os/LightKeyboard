@@ -6,13 +6,13 @@ bundled-dictionary autocorrect.
 ## Install via BrightMarket
 
 <p align="center">
-  <img src="https://gi-os.github.io/brightmarket-index/assets/brightmarket-qr.png" alt="Scan to open BrightMarket" width="180" />
+  <img src="https://gi-os.github.io/brightmarket-index/assets/qr/LightKeyboard.png" alt="Scan to open LightKeyboard in BrightMarket" width="180" />
 </p>
 
-Scan the code above, or visit
-**[gi-os.github.io/brightmarket-index/browse.html](https://gi-os.github.io/brightmarket-index/browse.html)**, to install
-and keep this app updated through **BrightMarket** — no Play Store, no PC
-required.
+Scan the code above with **BrightMarket** installed to open LightKeyboard there and
+install or update it directly. Don't have BrightMarket yet? Get it, and browse
+every Bright app, at
+**[gi-os.github.io/brightmarket-index/browse.html](https://gi-os.github.io/brightmarket-index/browse.html)**.
 
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
