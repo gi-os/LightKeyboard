@@ -12,7 +12,7 @@ bundled-dictionary autocorrect.
 Scan the code above with **BrightMarket** installed to open LightKeyboard there and
 install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
-**[gi-os.github.io/brightmarket-index/browse.html](https://gi-os.github.io/brightmarket-index/browse.html)**.
+**[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
 
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
@@ -56,19 +56,6 @@ remove the word your spelling most obviously matches.
 2. **Choose it as your keyboard** — makes it the active input method.
 
 That's it — under five minutes, most of it Android's own settings UI.
-
-### Where it shows up
-
-Light's own tools — Messages, Notes, Directory, the dialer — draw their keyboard inside the app
-rather than asking Android for one. No input method can replace it, this one or any other, so those
-screens keep the LightOS keyboard however both setup steps read. Two ✓ and Light's Messages still
-looking the same is the keyboard working, not failing.
-
-Everything you install yourself does go through the system keyboard, which is where Light Keyboard
-appears: [BrightChat](https://github.com/gi-os/BrightChat) for texting,
-[BrightNotebook](https://github.com/gi-os/BrightNotebook) for notes, and every other Bright app,
-plus any ordinary Android app you sideload. To type with it in Light's Messages, use BrightChat
-instead — same messages, same phone, a text field the keyboard can reach.
 
 ## Configuration
 
@@ -179,12 +166,6 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
-- **v1.0.x** (2026-08-24) — **The setup screen says where the keyboard applies.** The commonest
-  question about this app is not a bug: both steps show a ✓, Light's own Messages and Notes still come
-  up with the LightOS keyboard, and it reads as the app quietly not working. Those apps never ask
-  Android for a keyboard — they draw one themselves — so no input method can appear there, and the only
-  way to find that out was to ask another owner. A grey line under the two steps now says so, with the
-  same note in the README.
 - **v1.0.x** (2026-08-01) — **A login code arrives in the strip, and closing needs a longer hold.**
   A verification code arrives in one app and is wanted in another, and the walk between them is done
   from memory in the one moment you cannot afford to mistype. iOS puts it above the keys; Android does
@@ -283,3 +264,21 @@ is [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard).
 ## License
 
 [MIT](LICENSE). Do what you like with it.
+
+<!-- bright-footer:begin -->
+---
+
+## Bright\*
+
+*Swipe typing and autocorrect for a stock keyboard that shipped with neither.*
+
+26 open-source apps for the **Light Phone III** — camera, music, maps, messages,
+reading, transit, games. The phone has no app store, so they install by sideload: scan one
+code from **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)** and BrightMarket keeps them updated.
+
+[Roll](https://github.com/gi-os/Roll) · [BrightMusic](https://github.com/gi-os/BrightMusic) · [BrightWay](https://github.com/gi-os/BrightWay) · [BrightChat](https://github.com/gi-os/BrightChat) · [BrightControl](https://github.com/gi-os/BrightControl) · [BrightRemote](https://github.com/gi-os/BrightRemote) · [browse all 26 →](https://brightmarket.gzl.dev)
+
+The Light Phone does not sponsor or endorse any of these. Built by
+[Giovanni Lupo](https://github.com/gi-os) — if this one is useful to you, a ⭐ helps the next
+person find it.
+<!-- bright-footer:end -->
