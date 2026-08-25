@@ -113,6 +113,13 @@ class SetupActivity : AppCompatActivity() {
         step1 = s1
         step2 = s2
 
+        // Sits directly under the two steps because that is where the question gets asked: both steps
+        // show a ✓ and the phone's own Messages and Notes still come up with Light's keyboard. They are
+        // not using a system input method at all — they draw the keyboard inside the app, so no IME,
+        // this one or any other, can replace it. Nothing here is broken when that happens, and without
+        // this line the only way to learn it is to go and ask someone.
+        val scopeView = label(getString(R.string.setup_scope), 14f, R.color.gray)
+
         val autocorrectToggle = toggle(R.string.setup_autocorrect, Prefs.autocorrect(this)) {
             Prefs.setAutocorrect(this, it)
         }
@@ -247,7 +254,7 @@ class SetupActivity : AppCompatActivity() {
         }
 
         listOf(
-            titleView, blurbView, s1.row, s2.row,
+            titleView, blurbView, s1.row, s2.row, scopeView,
             autocorrectToggle, swipeToggle, suggestionsToggle, autocapToggle, autoperiodToggle,
             returnToggle, emojiToggle,
             voiceRow, voiceStatus!!,

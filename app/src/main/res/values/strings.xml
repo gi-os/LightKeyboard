@@ -6,6 +6,7 @@
     <string name="setup_try">Try the keyboard here…</string>
     <string name="setup_step1">1. Enable Light Keyboard</string>
     <string name="setup_step2">2. Choose it as your keyboard</string>
+    <string name="setup_scope">Light’s own tools — Messages, Notes, Directory — draw their keyboard themselves and keep it whatever you choose here. Light Keyboard appears in the apps you install yourself.</string>
     <string name="setup_autocorrect">Autocorrect</string>
     <string name="setup_swipe">Swipe typing</string>
     <string name="setup_suggestions">Suggestions</string>
