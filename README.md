@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="" width="72" />
+
 <img src="assets/images/example.png" alt="Light Keyboard">
 
 A clone of the Light Phone 3's built-in keyboard, for any app — with swipe typing and a

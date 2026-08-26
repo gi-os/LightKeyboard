@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Build LightKeyboard's launcher mark.
+
+Part of the unified Bright* icon set. Every mark in the collection is drawn on
+the same 108x108 adaptive-icon canvas, inside the same 18..90 safe zone, at the
+same two stroke weights, in white on black and nothing else. The Light Phone
+III panel is black and white; a mark with a mid-tone in it dithers.
+
+Edit MARK below and re-run. The vector outputs need nothing but the standard
+library. The raster outputs need Pillow and cairosvg, and are skipped with a
+message if those are missing, because the vectors are what actually ship on
+API 26 and up.
+
+    python3 tools/icon_mark.py
+"""
+
+import os
+import re
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ---- the mark ---------------------------------------------------------------
+# Each entry is (path data, stroke width, even-odd fill). A stroke width of 0
+# means the path is filled instead of stroked.
+
+MARK = [
+    ('M23.00,34.00 H85.00 A5.00,5.00 0 0 1 90.00,39.00 V69.00 A5.00,5.00 0 0 1 85.00,74.00 H23.00 A5.00,5.00 0 0 1 18.00,69.00 V39.00 A5.00,5.00 0 0 1 23.00,34.00 Z', 5, False),
+    ('M26.50,42.00 H31.50 A1.50,1.50 0 0 1 33.00,43.50 V47.50 A1.50,1.50 0 0 1 31.50,49.00 H26.50 A1.50,1.50 0 0 1 25.00,47.50 V43.50 A1.50,1.50 0 0 1 26.50,42.00 Z', 0, False),
+    ('M36.50,42.00 H41.50 A1.50,1.50 0 0 1 43.00,43.50 V47.50 A1.50,1.50 0 0 1 41.50,49.00 H36.50 A1.50,1.50 0 0 1 35.00,47.50 V43.50 A1.50,1.50 0 0 1 36.50,42.00 Z', 0, False),
+    ('M46.50,42.00 H51.50 A1.50,1.50 0 0 1 53.00,43.50 V47.50 A1.50,1.50 0 0 1 51.50,49.00 H46.50 A1.50,1.50 0 0 1 45.00,47.50 V43.50 A1.50,1.50 0 0 1 46.50,42.00 Z', 0, False),
+    ('M56.50,42.00 H61.50 A1.50,1.50 0 0 1 63.00,43.50 V47.50 A1.50,1.50 0 0 1 61.50,49.00 H56.50 A1.50,1.50 0 0 1 55.00,47.50 V43.50 A1.50,1.50 0 0 1 56.50,42.00 Z', 0, False),
+    ('M66.50,42.00 H71.50 A1.50,1.50 0 0 1 73.00,43.50 V47.50 A1.50,1.50 0 0 1 71.50,49.00 H66.50 A1.50,1.50 0 0 1 65.00,47.50 V43.50 A1.50,1.50 0 0 1 66.50,42.00 Z', 0, False),
+    ('M76.50,42.00 H81.50 A1.50,1.50 0 0 1 83.00,43.50 V47.50 A1.50,1.50 0 0 1 81.50,49.00 H76.50 A1.50,1.50 0 0 1 75.00,47.50 V43.50 A1.50,1.50 0 0 1 76.50,42.00 Z', 0, False),
+    ('M31.50,52.00 H36.50 A1.50,1.50 0 0 1 38.00,53.50 V57.50 A1.50,1.50 0 0 1 36.50,59.00 H31.50 A1.50,1.50 0 0 1 30.00,57.50 V53.50 A1.50,1.50 0 0 1 31.50,52.00 Z', 0, False),
+    ('M41.50,52.00 H46.50 A1.50,1.50 0 0 1 48.00,53.50 V57.50 A1.50,1.50 0 0 1 46.50,59.00 H41.50 A1.50,1.50 0 0 1 40.00,57.50 V53.50 A1.50,1.50 0 0 1 41.50,52.00 Z', 0, False),
+    ('M51.50,52.00 H56.50 A1.50,1.50 0 0 1 58.00,53.50 V57.50 A1.50,1.50 0 0 1 56.50,59.00 H51.50 A1.50,1.50 0 0 1 50.00,57.50 V53.50 A1.50,1.50 0 0 1 51.50,52.00 Z', 0, False),
+    ('M61.50,52.00 H66.50 A1.50,1.50 0 0 1 68.00,53.50 V57.50 A1.50,1.50 0 0 1 66.50,59.00 H61.50 A1.50,1.50 0 0 1 60.00,57.50 V53.50 A1.50,1.50 0 0 1 61.50,52.00 Z', 0, False),
+    ('M71.50,52.00 H76.50 A1.50,1.50 0 0 1 78.00,53.50 V57.50 A1.50,1.50 0 0 1 76.50,59.00 H71.50 A1.50,1.50 0 0 1 70.00,57.50 V53.50 A1.50,1.50 0 0 1 71.50,52.00 Z', 0, False),
+    ('M36.00,62.00 H72.00 A2.00,2.00 0 0 1 74.00,64.00 V67.00 A2.00,2.00 0 0 1 72.00,69.00 H36.00 A2.00,2.00 0 0 1 34.00,67.00 V64.00 A2.00,2.00 0 0 1 36.00,62.00 Z', 0, False),
+]
+
+# Where the mark is written, and at what viewport. 108 is the adaptive-icon
+# canvas; 240 is the LightOS splash mark, which is the only place a LightOS
+# tool can show a mark of its own.
+TARGETS = [
+    ('app/src/main/res/drawable/ic_launcher_foreground.xml', 108),
+]
+
+# Legacy rasters: (path, pixels, circular mask, inset, transparent plate).
+# Inset shrinks the mark inside the plate - a legacy square icon gets no
+# launcher mask, so it needs the margin the mask would otherwise have given it.
+# A transparent plate is for an adaptive foreground layer, which is composited
+# over the plate rather than carrying one of its own.
+RASTERS = [
+
+]
+
+# Files that are the same in every app: the black plate, and the adaptive-icon
+# wrapper that points the launcher at the plate and the mark.
+STATIC = [
+    ('app/src/main/res/drawable/ic_launcher_background.xml', '<?xml version="1.0" encoding="utf-8"?>\n<!-- Solid black plate. The whole set is black and white; nothing else belongs here. -->\n<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:width="108dp"\n    android:height="108dp"\n    android:viewportWidth="108"\n    android:viewportHeight="108">\n    <path\n        android:pathData="M0,0 H108 V108 H0 Z"\n        android:fillColor="#000000" />\n</vector>\n'),
+    ('app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml', '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@drawable/ic_launcher_background" />\n    <foreground android:drawable="@drawable/ic_launcher_foreground" />\n    <monochrome android:drawable="@drawable/ic_launcher_foreground" />\n</adaptive-icon>\n'),
+    ('app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml', '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@drawable/ic_launcher_background" />\n    <foreground android:drawable="@drawable/ic_launcher_foreground" />\n    <monochrome android:drawable="@drawable/ic_launcher_foreground" />\n</adaptive-icon>\n'),
+]
+
+STROKE = ('        android:fillColor="#00000000"\n'
+          '        android:strokeColor="#FFFFFF"\n'
+          '        android:strokeWidth="%g"\n'
+          '        android:strokeLineCap="round"\n'
+          '        android:strokeLineJoin="round" />')
+
+HEADER = '''<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LightKeyboard launcher mark. One of the unified Bright* set: 108 canvas, 18..90
+  safe zone, white on black, no greys and no colour anywhere.
+
+  Generated by tools/icon_mark.py - edit the geometry there, not here.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="%(vp)sdp"
+    android:height="%(vp)sdp"
+    android:viewportWidth="%(vp)s"
+    android:viewportHeight="%(vp)s">
+%(paths)s
+</vector>
+'''
+
+
+def scale_path(d, k):
+    """Multiply every number in a path by k.
+
+    Safe on this data because every path is absolute and uniformly scaled, so
+    arc rx/ry scale with everything else. The large-arc and sweep flags are 0
+    or 1 and a naive pass would scale them into nonsense, so each arc command
+    is matched whole and its three flag fields copied through untouched."""
+    if k == 1.0:
+        return d
+    num = re.compile(r'-?\d*\.?\d+')
+    arc = re.compile(r'A\s*(-?[\d.]+)\s*,?\s*(-?[\d.]+)\s+(-?[\d.]+)\s+([01])\s*,?\s*([01])\s+')
+
+    def one(s):
+        return ('%.3f' % (float(s) * k)).rstrip('0').rstrip('.')
+
+    def plain(s):
+        return num.sub(lambda m: one(m.group(0)), s)
+
+    out, i = [], 0
+    for m in arc.finditer(d):
+        out.append(plain(d[i:m.start()]))
+        out.append('A%s,%s %s %s %s ' % (one(m.group(1)), one(m.group(2)),
+                                         m.group(3), m.group(4), m.group(5)))
+        i = m.end()
+    out.append(plain(d[i:]))
+    return ''.join(out)
+
+
+def render(vp):
+    k = vp / 108.0
+    body = []
+    for d, w, even in MARK:
+        pd = scale_path(d, k)
+        if w == 0:
+            ft = '\n        android:fillType="evenOdd"' if even else ''
+            body.append('    <path\n        android:pathData="%s"\n'
+                        '        android:fillColor="#FFFFFF"%s />' % (pd, ft))
+        else:
+            body.append('    <path\n        android:pathData="%s"\n%s'
+                        % (pd, STROKE % (w * k)))
+    return HEADER % {'vp': vp, 'paths': '\n'.join(body)}
+
+
+def svg(inset=1.0, transparent=False):
+    m = (1 - inset) * 54
+    s = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">']
+    if not transparent:
+        s.append('<rect width="108" height="108" fill="#000000"/>')
+    s += [
+         '<g transform="translate(%.3f,%.3f) scale(%s)">' % (m, m, inset)]
+    for d, w, even in MARK:
+        if w == 0:
+            fr = ' fill-rule="evenodd"' if even else ''
+            s.append('<path d="%s" fill="#FFFFFF"%s/>' % (d, fr))
+        else:
+            s.append('<path d="%s" fill="none" stroke="#FFFFFF" stroke-width="%s" '
+                     'stroke-linecap="round" stroke-linejoin="round"/>' % (d, w))
+    s.append('</g></svg>')
+    return ''.join(s)
+
+
+def write(rel, text):
+    p = os.path.join(ROOT, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, 'w').write(text)
+    print('wrote', rel)
+
+
+def rasters():
+    try:
+        import io
+        import cairosvg
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print('Pillow/cairosvg not installed - skipped the rasters. The adaptive '
+              'icon is what ships on API 26 and up.')
+        return
+    for rel, px, round_, inset, transparent in RASTERS:
+        raw = cairosvg.svg2png(bytestring=svg(inset, transparent).encode(),
+                               output_width=px * 4, output_height=px * 4)
+        im = Image.open(io.BytesIO(raw)).convert('RGBA')
+        if round_:
+            mask = Image.new('L', im.size, 0)
+            ImageDraw.Draw(mask).ellipse([0, 0, im.size[0] - 1, im.size[1] - 1], fill=255)
+            im.putalpha(mask)
+        im = im.resize((px, px), Image.LANCZOS)
+        p = os.path.join(ROOT, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        im.save(p, 'WEBP' if rel.endswith('.webp') else 'PNG')
+        print('wrote', rel)
+
+
+if __name__ == '__main__':
+    for rel, vp in TARGETS:
+        write(rel, render(vp))
+    for rel, text in STATIC:
+        write(rel, text)
+    rasters()
